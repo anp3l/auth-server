@@ -1,0 +1,21 @@
+services:
+  auth-mongo:
+    image: mongo:7.0
+    container_name: auth-mongo
+    ports: ["27019:27017"]
+    volumes: 
+      - auth-mongo-data:/data/db
+
+  auth-api:
+    build: .
+    container_name: auth-server
+    ports: ["4000:4000"]
+    env_file: .env
+    environment:
+      - MONGO_URI=mongodb://auth-mongo:27017/authdb
+      - PORT=4000
+    depends_on: 
+      - auth-mongo
+
+volumes:
+  auth-mongo-data:
