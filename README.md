@@ -101,8 +101,6 @@ Includes MongoDB pre-configured.
     
 - **Server running at:** [http://localhost:4000](http://localhost:4000/)
     
-- **Swagger Docs:** [http://localhost:4000/api-docs] http://localhost:4000/api-docs
-    
 
 The container receives configuration via `env_file` (the `.env` file) so you don't need to mount PEM files as volumes.
 
@@ -137,7 +135,7 @@ Requires **Node.js v18+** and **MongoDB**.
 | POST | `/auth/login` | Login with email/password (returns JWT) |
 | GET | `/health` | Server health check |
 
-- **Full Swagger (OpenAPI) available at:** `http://localhost:4000/api-docs`
+- **Full Swagger (OpenAPI) available at:** http://localhost:4000/api-docs
 
 ---
 
