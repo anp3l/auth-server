@@ -93,7 +93,11 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
 // === HEALTH CHECK ===
 app.get('/health', (req, res) => {
-  res.json({ status: 'Auth Server is running', timestamp: new Date() });
+  res.json({ 
+    status: 'Auth Server is running', 
+    version: version,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // === START SERVER ===
