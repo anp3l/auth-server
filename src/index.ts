@@ -6,6 +6,7 @@ import mongoConnection from './mongo-connection';
 import authRoutes from './routes/auth.routes';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsDoc from 'swagger-jsdoc';
+import { version } from '../package.json';
 
 const app = express();
 const port = PORT;
@@ -16,7 +17,7 @@ const swaggerOptions = {
     openapi: '3.0.0',
     info: {
       title: 'Auth Server API',
-      version: '1.0.0',
+      version: version,
       description: 'Identity Provider API for User Management and Authentication (RSA signed tokens)'
     },
     servers: [
@@ -97,6 +98,6 @@ app.get('/health', (req, res) => {
 
 // === START SERVER ===
 app.listen(port, () => {
-  console.log(`🔐 Auth Server running on port ${port}`);
+  console.log(`🔐 Auth Server running on port ${port} (v${version})`);
   console.log(`📄 Swagger Docs available at http://localhost:${port}/api-docs`);
 });
