@@ -87,7 +87,7 @@ cd auth-server
 
     
 
-## 3. Choose your Deployment Method
+## 3. Choose your Setup Method
 
 ## Option A: Docker (Recommended)
 
