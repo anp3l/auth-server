@@ -9,6 +9,8 @@ import { loginValidator, signupValidator, refreshTokenValidator, updateProfileVa
 import { validateRequest } from '../middleware/validateRequest.middleware';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
+import { changePasswordValidator } from '../validators/auth.validators';
+import { body, param } from 'express-validator';
 
 const router = Router();
 
@@ -572,5 +574,338 @@ router.put('/profile', verifyToken, updateProfileValidator, validateRequest, asy
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
+
+/**
+ * @swagger
+ * /auth/change-password:
+ *   post:
+ *     summary: Change password
+ *     description: Change authenticated user's password
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - currentPassword
+ *               - newPassword
+ *               - confirmPassword
+ *             properties:
+ *               currentPassword:
+ *                 type: string
+ *                 format: password
+ *               newPassword:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 8
+ *               confirmPassword:
+ *                 type: string
+ *                 format: password
+ *     responses:
+ *       200:
+ *         description: Password changed successfully
+ *       400:
+ *         description: Validation error or incorrect current password
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.post('/change-password', verifyToken, changePasswordValidator, validateRequest, async (req: AuthRequest, res: Response) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    const user = await User.findById(req.userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Verify current password
+    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    user.password = hashedPassword;
+    user.updatedAt = new Date();
+    await user.save();
+
+    // Revoke all refresh tokens for security (force re-login on all devices)
+    await RefreshToken.updateMany(
+      { user: user._id, revoked: { $exists: false } },
+      { 
+        revoked: new Date(),
+        revokedByIp: 'password-change'
+      }
+    );
+
+    res.json({ 
+      message: 'Password changed successfully. Please login again on all devices.'
+    });
+
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/refresh-tokens:
+ *   get:
+ *     summary: Get all active refresh tokens
+ *     description: List all active refresh tokens for the authenticated user (for session management)
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of active refresh tokens
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 tokens:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       created:
+ *                         type: string
+ *                         format: date-time
+ *                       createdByIp:
+ *                         type: string
+ *                       expires:
+ *                         type: string
+ *                         format: date-time
+ *                       isActive:
+ *                         type: boolean
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get('/refresh-tokens', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const tokens = await RefreshToken.find({ 
+      user: req.userId,
+      revoked: { $exists: false },
+      expires: { $gt: new Date() }
+    })
+    .select('-token -user')
+    .sort({ created: -1 });
+
+    res.json({ 
+      tokens: tokens.map(t => ({
+        id: t._id,
+        created: t.created,
+        createdByIp: t.createdByIp,
+        expires: t.expires,
+        isActive: t.isActive
+      })),
+      count: tokens.length
+    });
+
+  } catch (error) {
+    console.error('Get refresh tokens error:', error);
+    res.status(500).json({ error: 'Failed to retrieve tokens' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/revoke-all-tokens:
+ *   post:
+ *     summary: Revoke all refresh tokens (logout from all devices)
+ *     description: Invalidate all active refresh tokens for the authenticated user
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: All tokens revoked successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 revokedCount:
+ *                   type: number
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.post('/revoke-all-tokens', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await RefreshToken.updateMany(
+      { 
+        user: req.userId,
+        revoked: { $exists: false }
+      },
+      { 
+        revoked: new Date(),
+        revokedByIp: getIpAddress(req)
+      }
+    );
+
+    res.json({ 
+      message: 'All refresh tokens revoked successfully',
+      revokedCount: result.modifiedCount
+    });
+
+  } catch (error) {
+    console.error('Revoke all tokens error:', error);
+    res.status(500).json({ error: 'Failed to revoke tokens' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/revoke-token/{tokenId}:
+ *   delete:
+ *     summary: Revoke specific refresh token
+ *     description: Invalidate a specific refresh token by ID (logout from specific device)
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: tokenId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Refresh token ID
+ *     responses:
+ *       200:
+ *         description: Token revoked successfully
+ *       401:
+ *         description: Unauthorized or token not found
+ *       404:
+ *         description: Token not found
+ *       500:
+ *         description: Server error
+ */
+router.delete('/revoke-token/:tokenId',
+  verifyToken,
+  param('tokenId').isMongoId().withMessage('Invalid token ID'),
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const token = await RefreshToken.findOne({
+        _id: req.params.tokenId,
+        user: req.userId
+      });
+
+      if (!token) {
+        return res.status(404).json({ error: 'Token not found' });
+      }
+
+      if (token.revoked) {
+        return res.status(400).json({ error: 'Token already revoked' });
+      }
+
+      token.revoked = new Date();
+      token.revokedByIp = getIpAddress(req);
+      await token.save();
+
+      res.json({ message: 'Token revoked successfully' });
+
+    } catch (error) {
+      console.error('Revoke token error:', error);
+      res.status(500).json({ error: 'Failed to revoke token' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /auth/account:
+ *   delete:
+ *     summary: Delete own account
+ *     description: Permanently delete the authenticated user's account and all associated data
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - password
+ *               - confirmation
+ *             properties:
+ *               password:
+ *                 type: string
+ *                 format: password
+ *                 description: Current password for confirmation
+ *               confirmation:
+ *                 type: string
+ *                 example: DELETE
+ *                 description: Type "DELETE" to confirm
+ *     responses:
+ *       200:
+ *         description: Account deleted successfully
+ *       400:
+ *         description: Invalid password or confirmation
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.delete('/account', 
+  verifyToken,
+  body('password').notEmpty().withMessage('Password is required'),
+  body('confirmation').equals('DELETE').withMessage('Type DELETE to confirm'),
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { password } = req.body;
+
+      const user = await User.findById(req.userId);
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Verify password
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      if (!isPasswordValid) {
+        return res.status(400).json({ error: 'Incorrect password' });
+      }
+
+      // Delete all refresh tokens
+      await RefreshToken.deleteMany({ user: user._id });
+
+      // Delete user account
+      await User.findByIdAndDelete(user._id);
+
+      res.json({ 
+        message: 'Account deleted successfully',
+        deletedAt: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('Delete account error:', error);
+      res.status(500).json({ error: 'Failed to delete account' });
+    }
+  }
+);
+
+
 
 export default router;

@@ -5,10 +5,12 @@ import cors from 'cors';
 import helmet from 'helmet';
 import mongoConnection from './mongo-connection';
 import authRoutes from './routes/auth.routes';
+import adminRoutes from './routes/admin.routes';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsDoc from 'swagger-jsdoc';
 import { version } from '../package.json';
 import { apiLimiter } from './middleware/rateLimiter.middleware';
+import { startCleanupScheduler } from './tasks/cleanup.task';
 
 const app = express();
 const port = PORT;
@@ -50,6 +52,10 @@ const swaggerOptions = {
       {
         name: 'User',
         description: 'User profile management endpoints'
+      },
+      {
+        name: 'Admin',
+        description: 'Admin endpoints for user management (Admin role required)'
       },
       {
         name: 'Health',
@@ -146,6 +152,8 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs, {
 // === DB CONNECTION ===
 mongoConnection.then(() => {
   console.log('✅ Connected to MongoDB');
+
+  startCleanupScheduler();
 }).catch((err) => {
   console.error('❌ MongoDB connection error:', err);
   process.exit(1);
@@ -153,6 +161,7 @@ mongoConnection.then(() => {
 
 // === ROUTES ===
 app.use('/auth', authRoutes);
+app.use('/admin', adminRoutes);
 
 // === HEALTH CHECK ===
 /**
