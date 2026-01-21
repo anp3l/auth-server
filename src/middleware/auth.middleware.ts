@@ -6,6 +6,8 @@ import path from 'path';
 
 export interface AuthRequest extends Request {
   userId?: string;
+  userRole?: string;
+  username?: string;
 }
 
 const publicKeyPath = path.join(__dirname, '../../public.pem');
@@ -16,6 +18,7 @@ try {
   // Fallback: if the public key is missing, the auth server could derive it from the private key
   // but for simplicity we assume it exists, as in the video server
   console.error('Missing public.pem in Auth Server middleware');
+  throw new Error('Public key not found');
 }
 
 /**
@@ -44,9 +47,15 @@ export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction)
   const token = authHeader.substring(7);
 
   try {
-    const decoded = jwt.verify(token, PUB_KEY, { algorithms: ['RS256'] }) as { userId: string };
+    const decoded = jwt.verify(token, PUB_KEY, { algorithms: ['RS256'] }) as { 
+      userId: string
+      username: string;
+      role: string;
+    };
     
     req.userId = decoded.userId;
+    req.username = decoded.username;
+    req.userRole = decoded.role;
     next();
   } catch (error) {
     return res.status(401).json({ error: 'Invalid or expired token' });
