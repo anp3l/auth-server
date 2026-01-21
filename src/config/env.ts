@@ -18,3 +18,6 @@ export const REFRESH_TOKEN_EXPIRY = process.env.REFRESH_TOKEN_EXPIRY || '7d';
 export const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
   ? process.env.ALLOWED_ORIGINS.split(',') 
   : ['http://localhost:3000', 'http://localhost:4200']; // Default Angular + fallback
+
+export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4200';
+

@@ -45,7 +45,7 @@ export const signupValidator: ValidationChain[] = [
 ];
 
 /**
- * Validator per login
+ * Validator for login
  */
 export const loginValidator: ValidationChain[] = [
   body('email')
@@ -134,7 +134,7 @@ export const updateProfileValidator: ValidationChain[] = [
 ];
 
 /**
- * Validator for change password (for future implementations)
+ * Validator for change password
  */
 export const changePasswordValidator: ValidationChain[] = [
   body('currentPassword')
@@ -152,6 +152,45 @@ export const changePasswordValidator: ValidationChain[] = [
       }
       return true;
     }),
+  
+  body('confirmPassword')
+    .notEmpty()
+    .withMessage('Password confirmation is required')
+    .custom((value, { req }) => {
+      if (value !== req.body.newPassword) {
+        throw new Error('Password confirmation does not match');
+      }
+      return true;
+    })
+];
+
+/**
+ * Validator per forgot password
+ */
+export const forgotPasswordValidator: ValidationChain[] = [
+  body('email')
+    .trim()
+    .isEmail()
+    .withMessage('Must be a valid email address')
+    .normalizeEmail()
+    .toLowerCase()
+];
+
+/**
+ * Validator for reset password
+ */
+export const resetPasswordValidator: ValidationChain[] = [
+  body('token')
+    .notEmpty()
+    .withMessage('Reset token is required')
+    .isLength({ min: 64, max: 64 })
+    .withMessage('Invalid reset token format'),
+  
+  body('newPassword')
+    .isLength({ min: 8 })
+    .withMessage('Password must be at least 8 characters long')
+    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+    .withMessage('Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character (@$!%*?&)'),
   
   body('confirmPassword')
     .notEmpty()

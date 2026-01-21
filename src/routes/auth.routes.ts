@@ -11,6 +11,10 @@ import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
 import { changePasswordValidator } from '../validators/auth.validators';
 import { body, param } from 'express-validator';
+import { PasswordResetToken, generatePasswordResetToken } from '../models/passwordResetToken.model';
+import { getEmailService } from '../services/email/email-service.factory';
+import { forgotPasswordValidator, resetPasswordValidator } from '../validators/auth.validators';
+
 
 const router = Router();
 
@@ -186,6 +190,15 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
     // Genera refresh token (lunga durata)
     const refreshToken = await generateAndSaveRefreshToken(user._id.toString(), getIpAddress(req));
 
+    // Invia welcome email (non bloccare la risposta se fallisce)
+    try {
+      const emailService = getEmailService();
+      await emailService.sendWelcomeEmail(user.email, user.username);
+    } catch (emailError) {
+      console.error('Failed to send welcome email:', emailError);
+      // Non fallire la registrazione per email
+    }
+    
     res.status(201).json({ 
       message: 'User created', 
       accessToken,
@@ -906,6 +919,273 @@ router.delete('/account',
   }
 );
 
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     summary: Request password reset
+ *     description: Send a password reset email to the user. Rate limited to prevent abuse.
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: user@example.com
+ *     responses:
+ *       200:
+ *         description: Reset email sent (always returns success for security)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: If the email exists, a password reset link has been sent
+ *       400:
+ *         description: Validation error
+ *       429:
+ *         description: Too many requests
+ *       500:
+ *         description: Server error
+ */
+router.post('/forgot-password', authLimiter, forgotPasswordValidator, validateRequest, async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    
+    // Find user by email
+    const user = await User.findOne({ email });
+    
+    if (!user) {
+      return res.json({ 
+        message: 'If the email exists, a password reset link has been sent' 
+      });
+    }
 
+    // Invalidates all previous tokens for this user
+    await PasswordResetToken.updateMany(
+      { user: user._id, used: false },
+      { used: true, usedAt: new Date() }
+    );
+
+    // Generate new token
+    const resetToken = generatePasswordResetToken();
+    const expires = new Date();
+    expires.setHours(expires.getHours() + 1); // Token valid for 1 hour
+
+    // Save token to database
+    const passwordResetToken = new PasswordResetToken({
+      user: user._id,
+      token: resetToken,
+      expires,
+      ipAddress: getIpAddress(req)
+    });
+    await passwordResetToken.save();
+
+    // Send email
+    try {
+      const emailService = getEmailService();
+      await emailService.sendPasswordResetEmail(
+        user.email,
+        resetToken,
+        user.username || user.firstName || 'User'
+      );
+    } catch (emailError) {
+      console.error('Failed to send password reset email:', emailError);
+    }
+
+    res.json({ 
+      message: 'If the email exists, a password reset link has been sent' 
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     summary: Reset password with token
+ *     description: Reset user password using the token received via email
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - token
+ *               - newPassword
+ *               - confirmPassword
+ *             properties:
+ *               token:
+ *                 type: string
+ *                 description: Reset token from email
+ *                 minLength: 64
+ *                 maxLength: 64
+ *               newPassword:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 8
+ *                 example: NewSecurePass123!
+ *               confirmPassword:
+ *                 type: string
+ *                 format: password
+ *                 example: NewSecurePass123!
+ *     responses:
+ *       200:
+ *         description: Password reset successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Password reset successful. Please login with your new password.
+ *       400:
+ *         description: Invalid or expired token
+ *       500:
+ *         description: Server error
+ */
+router.post('/reset-password', resetPasswordValidator, validateRequest, async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    // Find the valid token
+    const resetToken = await PasswordResetToken.findOne({
+      token,
+      used: false,
+      expires: { $gt: new Date() }
+    }).populate('user');
+
+    if (!resetToken) {
+      return res.status(400).json({ 
+        error: 'Invalid or expired reset token' 
+      });
+    }
+
+    const user = resetToken.user as any;
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    user.password = hashedPassword;
+    user.updatedAt = new Date();
+    await user.save();
+
+    // Mark the token as used
+    resetToken.used = true;
+    resetToken.usedAt = new Date();
+    await resetToken.save();
+
+    // Revoke all refresh tokens for security (force re-login)
+    await RefreshToken.updateMany(
+      { user: user._id, revoked: { $exists: false } },
+      { 
+        revoked: new Date(),
+        revokedByIp: 'password-reset'
+      }
+    );
+
+    res.json({ 
+      message: 'Password reset successful. Please login with your new password.' 
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/verify-reset-token:
+ *   post:
+ *     summary: Verify reset token validity
+ *     description: Check if a password reset token is valid (useful for frontend)
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - token
+ *             properties:
+ *               token:
+ *                 type: string
+ *                 minLength: 64
+ *                 maxLength: 64
+ *     responses:
+ *       200:
+ *         description: Token is valid
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 valid:
+ *                   type: boolean
+ *                   example: true
+ *                 email:
+ *                   type: string
+ *                   example: user@example.com
+ *                   description: Email address (partially hidden for privacy)
+ *       400:
+ *         description: Token is invalid or expired
+ */
+router.post('/verify-reset-token', 
+  body('token').isLength({ min: 64, max: 64 }).withMessage('Invalid token format'),
+  validateRequest,
+  async (req: Request, res: Response) => {
+    try {
+      const { token } = req.body;
+
+      const resetToken = await PasswordResetToken.findOne({
+        token,
+        used: false,
+        expires: { $gt: new Date() }
+      }).populate('user');
+
+      if (!resetToken) {
+        return res.status(400).json({ 
+          valid: false,
+          error: 'Invalid or expired reset token' 
+        });
+      }
+
+      const user = resetToken.user as any;
+      
+      // Hide part of the email for privacy
+      const email = user.email;
+      const [localPart, domain] = email.split('@');
+      const hiddenEmail = localPart.length > 3
+        ? `${localPart.substring(0, 2)}***@${domain}`
+        : `***@${domain}`;
+
+      res.json({ 
+        valid: true,
+        email: hiddenEmail
+      });
+
+    } catch (error) {
+      console.error('Verify reset token error:', error);
+      res.status(500).json({ error: 'Failed to verify token' });
+    }
+  }
+);
 
 export default router;
