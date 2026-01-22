@@ -14,7 +14,8 @@ import { body, param } from 'express-validator';
 import { PasswordResetToken, generatePasswordResetToken } from '../models/passwordResetToken.model';
 import { getEmailService } from '../services/email/email-service.factory';
 import { forgotPasswordValidator, resetPasswordValidator } from '../validators/auth.validators';
-
+import { logLoginAttempt, logAuditAction } from '../services/audit.service';
+import { LoginHistory } from '../models/loginHistory.model';
 
 const router = Router();
 
@@ -184,19 +185,24 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
     
     await user.save();
 
+    // LOG AUDIT: Signup
+    await logAuditAction('USER_SIGNUP', req, user._id.toString(), undefined, {
+      email: user.email,
+      username: user.username
+    });
+
     // Generate access token (short-lived)
     const accessToken = generateAccessToken(user._id.toString(), user.username, user.role);
     
-    // Genera refresh token (lunga durata)
+    // Generate refresh token (long duration)
     const refreshToken = await generateAndSaveRefreshToken(user._id.toString(), getIpAddress(req));
 
-    // Invia welcome email (non bloccare la risposta se fallisce)
+    // Send welcome email
     try {
       const emailService = getEmailService();
       await emailService.sendWelcomeEmail(user.email, user.username);
     } catch (emailError) {
       console.error('Failed to send welcome email:', emailError);
-      // Non fallire la registrazione per email
     }
     
     res.status(201).json({ 
@@ -279,9 +285,22 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
     const { email, password } = req.body;
     
     const user = await User.findOne({ email });
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    
+    if (!user) {
+      // LOG: Login failed -user not found
+      await logLoginAttempt(null, req, false, 'User not found');
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      // LOG: Login failed - password incorrect
+      await logLoginAttempt(user._id.toString(), req, false, 'Invalid password');
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // LOG: Login successful
+    await logLoginAttempt(user._id.toString(), req, true);
 
     // Generate access token
     const accessToken = generateAccessToken(user._id.toString(), user.username, user.role);
@@ -577,6 +596,11 @@ router.put('/profile', verifyToken, updateProfileValidator, validateRequest, asy
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // LOG AUDIT: Profile updated
+    await logAuditAction('PROFILE_UPDATED', req, req.userId, undefined, {
+      fields: Object.keys(updateData)
+    });
+
     res.json({ 
       message: 'Profile updated',
       user 
@@ -649,6 +673,9 @@ router.post('/change-password', verifyToken, changePasswordValidator, validateRe
     user.password = hashedPassword;
     user.updatedAt = new Date();
     await user.save();
+
+    // LOG AUDIT: Password changed
+    await logAuditAction('PASSWORD_CHANGED', req, user._id.toString());
 
     // Revoke all refresh tokens for security (force re-login on all devices)
     await RefreshToken.updateMany(
@@ -773,6 +800,12 @@ router.post('/revoke-all-tokens', verifyToken, async (req: AuthRequest, res: Res
         revokedByIp: getIpAddress(req)
       }
     );
+
+    // LOG AUDIT: Tokens revoked
+    await logAuditAction('TOKENS_REVOKED', req, req.userId, undefined, {
+      count: result.modifiedCount,
+      type: 'all'
+    });
 
     res.json({ 
       message: 'All refresh tokens revoked successfully',
@@ -901,6 +934,12 @@ router.delete('/account',
         return res.status(400).json({ error: 'Incorrect password' });
       }
 
+      // LOG AUDIT: Account deleted (prima di eliminare)
+      await logAuditAction('ACCOUNT_DELETED', req, req.userId, undefined, {
+        email: user.email,
+        username: user.username
+      });
+
       // Delete all refresh tokens
       await RefreshToken.deleteMany({ user: user._id });
 
@@ -969,6 +1008,9 @@ router.post('/forgot-password', authLimiter, forgotPasswordValidator, validateRe
         message: 'If the email exists, a password reset link has been sent' 
       });
     }
+
+    // LOG AUDIT: Password reset requested
+    await logAuditAction('PASSWORD_RESET_REQUESTED', req, user._id.toString());
 
     // Invalidates all previous tokens for this user
     await PasswordResetToken.updateMany(
@@ -1090,6 +1132,9 @@ router.post('/reset-password', resetPasswordValidator, validateRequest, async (r
     resetToken.usedAt = new Date();
     await resetToken.save();
 
+    // LOG AUDIT: Password reset completed
+    await logAuditAction('PASSWORD_RESET_COMPLETED', req, user._id.toString());
+
     // Revoke all refresh tokens for security (force re-login)
     await RefreshToken.updateMany(
       { user: user._id, revoked: { $exists: false } },
@@ -1187,5 +1232,81 @@ router.post('/verify-reset-token',
     }
   }
 );
+
+/**
+ * @swagger
+ * /auth/login-history:
+ *   get:
+ *     summary: Get login history
+ *     description: Retrieve recent login attempts for the authenticated user
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 20
+ *         description: Number of records to return
+ *     responses:
+ *       200:
+ *         description: Login history retrieved
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 history:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       ipAddress:
+ *                         type: string
+ *                       browser:
+ *                         type: string
+ *                       os:
+ *                         type: string
+ *                       device:
+ *                         type: string
+ *                       loginAt:
+ *                         type: string
+ *                         format: date-time
+ *                       success:
+ *                         type: boolean
+ *                       failureReason:
+ *                         type: string
+ *                 total:
+ *                   type: number
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get('/login-history', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+
+    const history = await LoginHistory.find({ user: req.userId })
+      .sort({ loginAt: -1 })
+      .limit(limit)
+      .select('-user -userAgent -__v');
+
+    const total = await LoginHistory.countDocuments({ user: req.userId });
+
+    res.json({ 
+      history,
+      total,
+      showing: history.length
+    });
+
+  } catch (error) {
+    console.error('Get login history error:', error);
+    res.status(500).json({ error: 'Failed to retrieve login history' });
+  }
+});
 
 export default router;

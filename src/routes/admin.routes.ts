@@ -5,6 +5,8 @@ import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/authorize.middleware';
 import { body, param, query } from 'express-validator';
 import { validateRequest } from '../middleware/validateRequest.middleware';
+import { logAuditAction } from '../services/audit.service';
+import { AuditLog } from '../models/auditLog.model';
 
 const router = Router();
 
@@ -242,6 +244,21 @@ router.put('/users/:id/role',
         return res.status(404).json({ error: 'User not found' });
       }
 
+      // LOG AUDIT: Role changed by admin
+      await logAuditAction(
+        'ROLE_CHANGED', 
+        req, 
+        user._id.toString(), 
+        req.userId,
+        {
+          newRole: role,
+          targetUser: {
+            email: user.email,
+            username: user.username
+          }
+        }
+      );
+
       // Revoke all refresh tokens when role changes (security measure)
       await RefreshToken.updateMany(
         { user: user._id, revoked: { $exists: false } },
@@ -306,6 +323,21 @@ router.delete('/users/:id',
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
+
+      // LOG AUDIT: User deleted by admin
+      await logAuditAction(
+        'USER_DELETED_BY_ADMIN', 
+        req, 
+        user._id.toString(), 
+        req.userId, // Admin who performed the action
+        {
+          deletedUser: {
+            email: user.email,
+            username: user.username,
+            role: user.role
+          }
+        }
+      );
 
       // Revoke all refresh tokens
       await RefreshToken.deleteMany({ user: user._id });
@@ -396,5 +428,150 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
     res.status(500).json({ error: 'Failed to retrieve statistics' });
   }
 });
+
+/**
+ * @swagger
+ * /admin/audit-logs:
+ *   get:
+ *     summary: Get audit logs (Admin only)
+ *     description: Retrieve audit logs with filtering and pagination
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *           maximum: 100
+ *       - in: query
+ *         name: action
+ *         schema:
+ *           type: string
+ *         description: Filter by action type
+ *       - in: query
+ *         name: userId
+ *         schema:
+ *           type: string
+ *         description: Filter by user ID
+ *       - in: query
+ *         name: success
+ *         schema:
+ *           type: boolean
+ *         description: Filter by success status
+ *     responses:
+ *       200:
+ *         description: Audit logs retrieved
+ *       403:
+ *         description: Forbidden
+ *       500:
+ *         description: Server error
+ */
+router.get('/audit-logs', async (req: AuthRequest, res: Response) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const action = req.query.action as string;
+    const userId = req.query.userId as string;
+    const success = req.query.success as string;
+
+    const query: any = {};
+    
+    if (action) query.action = action;
+    if (userId) query.user = userId;
+    if (success !== undefined) query.success = success === 'true';
+
+    const total = await AuditLog.countDocuments(query);
+    
+    const logs = await AuditLog.find(query)
+      .populate('user', 'username email')
+      .populate('performedBy', 'username email')
+      .sort({ timestamp: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    res.json({
+      logs,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get audit logs error:', error);
+    res.status(500).json({ error: 'Failed to retrieve audit logs' });
+  }
+});
+
+/**
+ * @swagger
+ * /admin/users/{id}/audit-logs:
+ *   get:
+ *     summary: Get audit logs for specific user (Admin only)
+ *     description: Retrieve all audit logs related to a specific user
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *     responses:
+ *       200:
+ *         description: User audit logs
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/users/:id/audit-logs',
+  param('id').isMongoId().withMessage('Invalid user ID'),
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+
+      const user = await User.findById(req.params.id);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const logs = await AuditLog.find({ user: req.params.id })
+        .populate('performedBy', 'username email')
+        .sort({ timestamp: -1 })
+        .limit(limit);
+
+      res.json({ 
+        logs,
+        total: logs.length,
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email
+        }
+      });
+
+    } catch (error) {
+      console.error('Get user audit logs error:', error);
+      res.status(500).json({ error: 'Failed to retrieve user audit logs' });
+    }
+  }
+);
 
 export default router;
