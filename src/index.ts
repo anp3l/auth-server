@@ -268,15 +268,15 @@ const gracefulShutdown = (signal: string) => {
 
 // === START SERVER ===
 const server = app.listen(port, () => {
-  console.log('╔═══════════════════════════════════════════════════════════╗');
-  console.log(`║  🔐 Auth Server v${version.padEnd(42)} ║`);
-  console.log('╠═══════════════════════════════════════════════════════════╣');
-  console.log(`║  Environment: ${NODE_ENV.padEnd(44)} ║`);
-  console.log(`║  Port: ${port!.toString().padEnd(51)} ║`);
-  console.log(`║  Logging: ${(ENABLE_LOGS ? 'enabled' : 'disabled').padEnd(47)} ║`);
-  console.log(`║  Docs: http://localhost:${port}/api-docs${' '.repeat(24)} ║`);
-  console.log(`║  Health: http://localhost:${port}/health${' '.repeat(23)} ║`);
-  console.log('╚═══════════════════════════════════════════════════════════╝');
+  console.log('╔══════════════════════════════════════════════════════════════╗');
+  console.log(`║🔐 Auth Server v${version.padEnd(42)}    ║`);
+  console.log('╠══════════════════════════════════════════════════════════════╣');
+  console.log(`║ Environment: ${NODE_ENV.padEnd(44)}    ║`);
+  console.log(`║ Port: ${port!.toString().padEnd(51)}    ║`);
+  console.log(`║ Logging: ${(ENABLE_LOGS ? 'enabled' : 'disabled').padEnd(47)}     ║`);
+  console.log(`║ Docs: http://localhost:${port}/api-docs${' '.repeat(24)} ║`);
+  console.log(`║ Health: http://localhost:${port}/health${' '.repeat(23)}  ║`);
+  console.log('╚══════════════════════════════════════════════════════════════╝');
 });
 
 // Listen for termination signals

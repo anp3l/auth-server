@@ -1,7 +1,5 @@
 import { EmailService } from './email.interface';
 import { MockEmailService } from './mock-email.service';
-import { NodemailerEmailService } from './nodemailer-email.service';
-import { ResendEmailService } from './resend-email.service';
 
 export type EmailProvider = 'mock' | 'nodemailer' | 'resend';
 
@@ -11,12 +9,6 @@ export function createEmailService(): EmailService {
   console.log(`📧 Email Service: ${provider}`);
 
   switch (provider) {
-    case 'resend':
-      return new ResendEmailService();
-    
-    case 'nodemailer':
-      return new NodemailerEmailService();
-    
     case 'mock':
     default:
       return new MockEmailService();

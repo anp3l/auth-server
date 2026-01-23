@@ -1,6 +1,45 @@
+# Node
 node_modules
 npm-debug.log
+yarn-error.log
+package-lock.json
+
+# Build artifacts (dev builds)
 dist
-.git
+build
+*.log
+
+# Environment & Secrets
 .env
+.env.*
 *.pem
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (no need in container)
+README.md
+docs
+
+# Docker files (no need in container)
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Tests (no need in container)
+*.test.ts
+*.spec.ts
+test
+tests
+coverage
