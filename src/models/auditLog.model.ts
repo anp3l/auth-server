@@ -11,7 +11,18 @@ export type AuditAction =
   | 'ACCOUNT_DELETED'
   | 'ROLE_CHANGED'
   | 'USER_DELETED_BY_ADMIN'
-  | 'TOKENS_REVOKED';
+  | 'TOKENS_REVOKED'
+  | 'AVATAR_UPDATED'
+  | 'EMAIL_PREFERENCES_UPDATED'
+  | 'LOGOUT'
+  | 'LOGOUT_ALL_DEVICES'
+  | 'USER_BANNED'
+  | 'USER_UNBANNED'
+  | 'ADDRESS_ADDED'
+  | 'ADDRESS_UPDATED'
+  | 'ADDRESS_DELETED'
+  | 'AVATAR_UPLOADED'
+  | 'AVATAR_DELETED'
 
 export interface IAuditLog extends Document {
   user?: Types.ObjectId;
@@ -43,7 +54,19 @@ const auditLogSchema = new Schema<IAuditLog>({
       'ACCOUNT_DELETED',
       'ROLE_CHANGED',
       'USER_DELETED_BY_ADMIN',
-      'TOKENS_REVOKED'
+      'TOKENS_REVOKED',
+      'AVATAR_UPDATED',
+      'EMAIL_PREFERENCES_UPDATED',
+      'LOGOUT',
+      'LOGOUT_ALL_DEVICES',
+      'USER_BANNED',
+      'USER_UNBANNED',
+      'ADDRESS_ADDED',
+      'ADDRESS_UPDATED',
+      'ADDRESS_DELETED',
+      'AVATAR_UPLOADED',
+      'AVATAR_DELETED'
+      
     ],
     required: true
   },
@@ -76,7 +99,6 @@ const auditLogSchema = new Schema<IAuditLog>({
 auditLogSchema.index({ user: 1, timestamp: -1 });
 auditLogSchema.index({ action: 1, timestamp: -1 });
 auditLogSchema.index({ performedBy: 1, timestamp: -1 });
-auditLogSchema.index({ timestamp: 1 }); // For cleanup
 
 auditLogSchema.index({ timestamp: 1 }, { expireAfterSeconds: 365 * 24 * 60 * 60 });
 

@@ -11,6 +11,7 @@ import swaggerJsDoc from 'swagger-jsdoc';
 import { version } from '../package.json';
 import { apiLimiter } from './middleware/rateLimiter.middleware';
 import { startCleanupScheduler } from './tasks/cleanup.task';
+import path from 'path';
 
 const app = express();
 const port = PORT;
@@ -90,17 +91,17 @@ process.on('uncaughtException', (error) => {
 
 // === SECURITY MIDDLEWARE ===
 
-// Helmet: vulnarability protection
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "validator.swagger.io"]
+      imgSrc: ["'self'", "data:", "blob:", "validator.swagger.io", "http://localhost:4000"]  // ✅ Aggiungi localhost
     }
   },
   crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },  // ✅ AGGIUNTO!
   hsts: {
     maxAge: 31536000,
     includeSubDomains: true,
@@ -114,12 +115,14 @@ const corsOptions = {
     ? ALLOWED_ORIGINS
     : '*',
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],  // ✅ AGGIUNTO
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']  // ✅ AGGIUNTO
 };
 app.use(cors(corsOptions));
 
 // Body parser
-app.use(express.json({ limit: '10mb' })); // playload limit
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.set('trust proxy', 1);
@@ -135,6 +138,51 @@ if (ENABLE_LOGS) {
     next();
   });
 }
+
+app.use('/uploads', (req, res, next) => {
+  // Imposta CORS headers per static files
+  const origin = req.headers.origin;
+  
+  if (NODE_ENV === 'production') {
+    // In production use ALLOWED_ORIGINS
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+  } else {
+    // In development you allow everything
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
+app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
+  maxAge: '1d',
+  etag: true,
+  lastModified: true,
+  setHeaders: (res, filePath) => {
+    // Correct Content-Type for images
+    if (filePath.endsWith('.webp')) {
+      res.setHeader('Content-Type', 'image/webp');
+    } else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
+      res.setHeader('Content-Type', 'image/jpeg');
+    } else if (filePath.endsWith('.png')) {
+      res.setHeader('Content-Type', 'image/png');
+    } else if (filePath.endsWith('.gif')) {
+      res.setHeader('Content-Type', 'image/gif');
+    }
+  }
+}));
 
 // === RATE LIMITING ===
 app.use('/auth', apiLimiter);
@@ -217,7 +265,9 @@ app.use((req, res, next) => {
     availableEndpoints: {
       health: '/health',
       docs: '/api-docs',
-      auth: '/auth/*'
+      auth: '/auth/*',
+      admin: '/admin/*',
+      uploads: '/uploads/*'
     }
   });
 });

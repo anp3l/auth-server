@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
+import multer from 'multer';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { User } from '../models/user.model';
 import { RefreshToken, generateRefreshToken } from '../models/refreshToken.model';
 import { PRIV_KEY } from '../config/keys';
 import { ACCESS_TOKEN_EXPIRY, REFRESH_TOKEN_EXPIRY } from '../config/env';
-import { loginValidator, signupValidator, refreshTokenValidator, updateProfileValidator } from '../validators/auth.validators';
+import { loginValidator, signupValidator, refreshTokenValidator, updateProfileValidator, updateEmailPreferencesValidator, addressValidator } from '../validators/auth.validators';
 import { validateRequest } from '../middleware/validateRequest.middleware';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
@@ -16,6 +17,8 @@ import { getEmailService } from '../services/email/email-service.factory';
 import { forgotPasswordValidator, resetPasswordValidator } from '../validators/auth.validators';
 import { logLoginAttempt, logAuditAction } from '../services/audit.service';
 import { LoginHistory } from '../models/loginHistory.model';
+import { avatarUpload, deleteAvatarFile } from '../middleware/upload.middleware';
+import { ENABLE_LOGS } from '../config/env';
 
 const router = Router();
 
@@ -258,27 +261,91 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
  *               properties:
  *                 accessToken:
  *                   type: string
+ *                   example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
  *                 refreshToken:
  *                   type: string
+ *                   example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
  *                 user:
  *                   type: object
  *                   properties:
  *                     id:
  *                       type: string
+ *                       example: 507f1f77bcf86cd799439011
  *                     username:
  *                       type: string
+ *                       example: johndoe
  *                     email:
  *                       type: string
+ *                       example: john@example.com
  *                     role:
  *                       type: string
+ *                       example: user
+ *                     firstName:
+ *                       type: string
+ *                       example: John
+ *                     lastName:
+ *                       type: string
+ *                       example: Doe
+ *                     avatar:
+ *                       type: string
+ *                       nullable: true
+ *                       example: https://example.com/avatars/johndoe.jpg
  *       400:
  *         description: Validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Validation error
  *       401:
  *         description: Invalid credentials
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Invalid credentials
+ *       403:
+ *         description: Account banned or inactive
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Account suspended
+ *                 reason:
+ *                   type: string
+ *                   example: Your account has been suspended. Contact support for more information.
+ *                 message:
+ *                   type: string
+ *                   example: Your account is not active. Please contact support.
  *       429:
  *         description: Too many login attempts
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Too many requests
  *       500:
  *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Login failed
  */
 router.post('/login', authLimiter, loginValidator, validateRequest, async (req: Request, res: Response) => {
   try {
@@ -287,9 +354,25 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
     const user = await User.findOne({ email });
     
     if (!user) {
-      // LOG: Login failed -user not found
+      // LOG: Login failed - user not found
       await logLoginAttempt(null, req, false, 'User not found');
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    if (user.isBanned) {
+      await logLoginAttempt(user._id.toString(), req, false, 'User is banned');
+      return res.status(403).json({ 
+        error: 'Account suspended', 
+        reason: user.banReason || 'Your account has been suspended. Contact support for more information.'
+      });
+    }
+
+    if (!user.isActive) {
+      await logLoginAttempt(user._id.toString(), req, false, 'Account inactive');
+      return res.status(403).json({ 
+        error: 'Account inactive',
+        message: 'Your account is not active. Please contact support.'
+      });
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
@@ -298,6 +381,9 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
       await logLoginAttempt(user._id.toString(), req, false, 'Invalid password');
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+
+    user.lastLogin = new Date();
+    await user.save();
 
     // LOG: Login successful
     await logLoginAttempt(user._id.toString(), req, true);
@@ -315,7 +401,10 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
         id: user._id, 
         username: user.username,
         email: user.email,
-        role: user.role
+        role: user.role,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        avatar: user.avatar
       } 
     });
 
@@ -526,9 +615,9 @@ router.get('/profile', verifyToken, async (req: AuthRequest, res: Response) => {
 /**
  * @swagger
  * /auth/profile:
- *   put:
- *     summary: Update user profile
- *     description: Update authenticated user's profile information
+ *   patch:
+ *     summary: Update user profile (basic info)
+ *     description: Update basic profile information. Only provided fields will be updated.
  *     tags: [User]
  *     security:
  *       - bearerAuth: []
@@ -541,76 +630,226 @@ router.get('/profile', verifyToken, async (req: AuthRequest, res: Response) => {
  *             properties:
  *               firstName:
  *                 type: string
- *                 minLength: 1
- *                 maxLength: 50
  *                 example: John
  *               lastName:
  *                 type: string
- *                 minLength: 1
- *                 maxLength: 50
  *                 example: Doe
- *               shippingAddress:
- *                 type: object
- *                 properties:
- *                   street:
- *                     type: string
- *                     example: Via Roma 123
- *                   city:
- *                     type: string
- *                     example: Milano
- *                   postalCode:
- *                     type: string
- *                     example: 20100
- *                   country:
- *                     type: string
- *                     example: Italy
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: newemail@example.com
+ *               phone:
+ *                 type: string
+ *                 example: +39 123 456 7890
+ *               dateOfBirth:
+ *                 type: string
+ *                 format: date
+ *                 example: 1990-01-15
+ *               gender:
+ *                 type: string
+ *                 example: male
+ *               bio:
+ *                 type: string
+ *                 example: Full-stack developer passionate about technology
+ *               avatar:
+ *                 type: string
+ *                 example: https://example.com/avatars/newavatar.jpg
  *     responses:
  *       200:
  *         description: Profile updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Profile updated successfully
+ *                 user:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: 507f1f77bcf86cd799439011
+ *                     username:
+ *                       type: string
+ *                       example: johndoe
+ *                     email:
+ *                       type: string
+ *                       example: newemail@example.com
+ *                     role:
+ *                       type: string
+ *                       example: user
+ *                     firstName:
+ *                       type: string
+ *                       example: John
+ *                     lastName:
+ *                       type: string
+ *                       example: Doe
+ *                     phone:
+ *                       type: string
+ *                       example: +39 123 456 7890
+ *                     dateOfBirth:
+ *                       type: string
+ *                       format: date-time
+ *                       example: 1990-01-15T00:00:00.000Z
+ *                     gender:
+ *                       type: string
+ *                       example: male
+ *                     bio:
+ *                       type: string
+ *                       example: Full-stack developer passionate about technology
+ *                     avatar:
+ *                       type: string
+ *                       nullable: true
+ *                       example: https://example.com/avatars/newavatar.jpg
  *       400:
- *         description: Validation error
+ *         description: Validation error or invalid fields
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - type: object
+ *                   properties:
+ *                     error:
+ *                       type: string
+ *                       example: No fields provided for update
+ *                 - type: object
+ *                   properties:
+ *                     error:
+ *                       type: string
+ *                       example: Invalid fields
+ *                     invalidFields:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                       example: ["unknownField", "anotherInvalidField"]
+ *                 - type: object
+ *                   properties:
+ *                     error:
+ *                       type: string
+ *                       example: Validation failed
+ *                     details:
+ *                       type: string
+ *                       example: Invalid email format
  *       401:
- *         description: Unauthorized
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
  *       404:
  *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: User not found
+ *       409:
+ *         description: Email already in use by another user
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Email already in use
  *       500:
  *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to update profile
  */
-router.put('/profile', verifyToken, updateProfileValidator, validateRequest, async (req: AuthRequest, res: Response) => {
-  try {
-    const { firstName, lastName, shippingAddress } = req.body;
-    
-    const updateData: any = { updatedAt: new Date() };
-    
-    if (firstName !== undefined) updateData.firstName = firstName;
-    if (lastName !== undefined) updateData.lastName = lastName;
-    if (shippingAddress !== undefined) updateData.shippingAddress = shippingAddress;
+router.patch('/profile', 
+  verifyToken,
+  updateProfileValidator,
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const allowedFields = ['firstName', 'lastName', 'email', 'phone', 'dateOfBirth', 'gender', 'bio', 'avatar'];
+      const updates = Object.keys(req.body);
 
-    const user = await User.findByIdAndUpdate(
-      req.userId,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password');
-    
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      if (updates.length === 0) {
+        return res.status(400).json({ error: 'No fields provided for update' });
+      }
+
+      const invalidFields = updates.filter(field => !allowedFields.includes(field));
+      if (invalidFields.length > 0) {
+        return res.status(400).json({ 
+          error: 'Invalid fields', 
+          invalidFields 
+        });
+      }
+
+      if (req.body.email) {
+        const existingUser = await User.findOne({ 
+          email: req.body.email.toLowerCase(),
+          _id: { $ne: req.userId } 
+        });
+        if (existingUser) {
+          return res.status(409).json({ error: 'Email already in use' });
+        }
+      }
+
+      const updateData: any = {};
+      allowedFields.forEach(field => {
+        if (req.body[field] !== undefined) {
+          if (field === 'dateOfBirth') {
+            updateData[field] = new Date(req.body[field]);
+          } else if (field === 'email') {
+            updateData[field] = req.body[field].toLowerCase();
+          } else {
+            updateData[field] = req.body[field];
+          }
+        }
+      });
+
+      const user = await User.findByIdAndUpdate(
+        req.userId,
+        { $set: updateData },
+        { new: true, runValidators: true }
+      ).select('-password');
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      await logAuditAction('PROFILE_UPDATED', req, req.userId, undefined, {
+        updatedFields: Object.keys(updateData)
+      });
+
+      res.json({ 
+        message: 'Profile updated successfully',
+        user 
+      });
+
+    } catch (error) {
+      console.error('Update profile error:', error);
+      
+      if ((error as any).name === 'ValidationError') {
+        return res.status(400).json({ 
+          error: 'Validation failed', 
+          details: (error as any).message 
+        });
+      }
+      
+      res.status(500).json({ error: 'Failed to update profile' });
     }
-
-    // LOG AUDIT: Profile updated
-    await logAuditAction('PROFILE_UPDATED', req, req.userId, undefined, {
-      fields: Object.keys(updateData)
-    });
-
-    res.json({ 
-      message: 'Profile updated',
-      user 
-    });
-
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({ error: 'Failed to update profile' });
   }
-});
+);
 
 /**
  * @swagger
@@ -695,6 +934,1161 @@ router.post('/change-password', verifyToken, changePasswordValidator, validateRe
     res.status(500).json({ error: 'Failed to change password' });
   }
 });
+
+// ==================== UPLOAD AVATAR ====================
+
+/**
+ * @swagger
+ * /auth/avatar:
+ *   post:
+ *     summary: Upload user avatar
+ *     description: Upload a new avatar image. Replaces existing avatar if present.
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - avatar
+ *             properties:
+ *               avatar:
+ *                 type: string
+ *                 format: binary
+ *                 description: Avatar image file (max 5MB, JPEG/PNG/GIF/WebP)
+ *     responses:
+ *       200:
+ *         description: Avatar uploaded successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Avatar uploaded successfully
+ *                 avatarUrl:
+ *                   type: string
+ *                   example: /uploads/avatars/1234567890-avatar.jpg
+ *                 user:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: 507f1f77bcf86cd799439011
+ *                     username:
+ *                       type: string
+ *                       example: johndoe
+ *                     email:
+ *                       type: string
+ *                       example: john@example.com
+ *                     avatar:
+ *                       type: string
+ *                       example: /uploads/avatars/1234567890-avatar.jpg
+ *       400:
+ *         description: No file uploaded, invalid file type, or file too large
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: File too large. Maximum size is 5MB
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: User not found
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to upload avatar
+ */
+
+router.post('/avatar',
+  verifyToken,
+  (req, res, next) => {
+    avatarUpload.single('avatar')(req, res, (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ error: 'File too large. Maximum size is 5MB' });
+        }
+        return res.status(400).json({ error: err.message });
+      } else if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      next();
+    });
+  },
+  async (req: AuthRequest, res: Response) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const user = await User.findById(req.userId);
+      
+      if (!user) {
+        // Cancella il file appena caricato se user non esiste
+        await deleteAvatarFile(`/uploads/avatars/${req.file.filename}`);
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // ✅ Cancella il vecchio avatar se esiste
+      if (user.avatar) {
+        try {
+          await deleteAvatarFile(user.avatar);
+        } catch (error) {
+          console.error('Failed to delete old avatar:', error);
+          // Non bloccare l'operazione se la cancellazione fallisce
+        }
+      }
+
+      // Costruisci URL pubblico
+      const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+
+      user.avatar = avatarUrl;
+      await user.save();
+
+      await logAuditAction('AVATAR_UPLOADED', req, req.userId, undefined, {
+        filename: req.file.filename,
+        size: req.file.size
+      });
+
+      res.json({ 
+        message: 'Avatar uploaded successfully',
+        avatarUrl,
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          avatar: user.avatar
+        }
+      });
+
+    } catch (error) {
+      console.error('Upload avatar error:', error);
+      
+      // Cleanup: cancella il file se qualcosa va storto
+      if (req.file) {
+        try {
+          await deleteAvatarFile(`/uploads/avatars/${req.file.filename}`);
+        } catch (cleanupError) {
+          console.error('Failed to cleanup uploaded file:', cleanupError);
+        }
+      }
+      
+      res.status(500).json({ error: 'Failed to upload avatar' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /auth/avatar:
+ *   delete:
+ *     summary: Delete user avatar
+ *     description: Remove the current avatar and delete the file from server
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Avatar deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Avatar deleted successfully
+ *                 user:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: 507f1f77bcf86cd799439011
+ *                     username:
+ *                       type: string
+ *                       example: johndoe
+ *                     email:
+ *                       type: string
+ *                       example: john@example.com
+ *                     avatar:
+ *                       type: string
+ *                       nullable: true
+ *                       example: null
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User not found or no avatar to delete
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: No avatar to delete
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to delete avatar
+ */
+
+router.delete('/avatar',
+  verifyToken,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await User.findById(req.userId);
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      if (!user.avatar) {
+        return res.status(404).json({ error: 'No avatar to delete' });
+      }
+
+      const avatarPath = user.avatar;
+
+      // ✅ Cancella il file fisico
+      try {
+        await deleteAvatarFile(avatarPath);
+      } catch (error) {
+        console.error('Failed to delete avatar file:', error);
+        // Continua comunque a rimuovere il riferimento dal DB
+      }
+
+      // ✅ Rimuovi il riferimento dal DB
+      user.avatar = undefined;
+      await user.save();
+
+      await logAuditAction('AVATAR_DELETED', req, req.userId);
+
+      res.json({ 
+        message: 'Avatar deleted successfully',
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          avatar: user.avatar
+        }
+      });
+
+    } catch (error) {
+      console.error('Delete avatar error:', error);
+      res.status(500).json({ error: 'Failed to delete avatar' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /auth/avatar:
+ *   get:
+ *     summary: Get current user avatar URL
+ *     description: Returns the avatar URL of the authenticated user
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Avatar URL retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 avatarUrl:
+ *                   type: string
+ *                   example: /uploads/avatars/1234567890-avatar.jpg
+ *                 username:
+ *                   type: string
+ *                   example: johndoe
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User not found or no avatar set
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: No avatar set
+ *                 message:
+ *                   type: string
+ *                   example: User has not uploaded an avatar yet
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to get avatar
+ */
+
+router.get('/avatar',
+  verifyToken,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await User.findById(req.userId).select('avatar username');
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      if (!user.avatar) {
+        return res.status(404).json({ 
+          error: 'No avatar set',
+          message: 'User has not uploaded an avatar yet'
+        });
+      }
+
+      res.json({ 
+        avatarUrl: user.avatar,
+        username: user.username
+      });
+
+    } catch (error) {
+      console.error('Get avatar error:', error);
+      res.status(500).json({ error: 'Failed to get avatar' });
+    }
+  }
+);
+
+
+// ==================== GET USER STATS ====================
+
+/**
+ * @swagger
+ * /auth/stats:
+ *   get:
+ *     summary: Get user statistics
+ *     description: Returns statistics about user activity (orders, spending, etc.)
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User statistics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 totalOrders:
+ *                   type: number
+ *                   example: 0
+ *                 totalSpent:
+ *                   type: number
+ *                   example: 0
+ *                 wishlistItems:
+ *                   type: number
+ *                   example: 0
+ *                 savedAddresses:
+ *                   type: number
+ *                   example: 2
+ *                 reviewsCount:
+ *                   type: number
+ *                   example: 0
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: User not found
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to retrieve stats
+ */
+
+router.get('/stats', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = await User.findById(req.userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // TODO: Implementa logica per calcolare stats reali
+    // mock 
+    const stats = {
+      totalOrders: 0,
+      totalSpent: 0,
+      wishlistItems: 0,
+      savedAddresses: user.addresses?.length || 0,
+      reviewsCount: 0
+    };
+
+    res.json(stats);
+
+  } catch (error) {
+    console.error('Get stats error:', error);
+    res.status(500).json({ error: 'Failed to retrieve stats' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/profile/email-preferences:
+ *   patch:
+ *     summary: Update email preferences
+ *     description: Update user email notification preferences, language, and currency
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               newsletter:
+ *                 type: boolean
+ *                 example: true
+ *               notifications:
+ *                 type: boolean
+ *                 example: false
+ *               language:
+ *                 type: string
+ *                 example: en
+ *               currency:
+ *                 type: string
+ *                 example: EUR
+ *     responses:
+ *       200:
+ *         description: Email preferences updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Email preferences updated
+ *                 emailPreferences:
+ *                   type: object
+ *                   properties:
+ *                     newsletter:
+ *                       type: boolean
+ *                       example: true
+ *                     notifications:
+ *                       type: boolean
+ *                       example: false
+ *                     language:
+ *                       type: string
+ *                       example: en
+ *                     currency:
+ *                       type: string
+ *                       example: EUR
+ *       400:
+ *         description: No preferences provided or validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: No preferences provided
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: User not found
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to update preferences
+ */
+
+router.patch('/profile/email-preferences', 
+  verifyToken,
+  updateEmailPreferencesValidator,
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const updates: any = {};
+      
+      if (req.body.newsletter !== undefined) {
+        updates['emailPreferences.newsletter'] = req.body.newsletter;
+      }
+      if (req.body.notifications !== undefined) {
+        updates['emailPreferences.notifications'] = req.body.notifications;
+      }
+      if (req.body.language !== undefined) {
+        updates['emailPreferences.language'] = req.body.language;
+      }
+      if (req.body.currency !== undefined) {
+        updates['emailPreferences.currency'] = req.body.currency;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: 'No preferences provided' });
+      }
+
+      const user = await User.findByIdAndUpdate(
+        req.userId,
+        { $set: updates },
+        { new: true, runValidators: true }
+      ).select('-password');
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      await logAuditAction('EMAIL_PREFERENCES_UPDATED', req, req.userId);
+
+      res.json({ 
+        message: 'Email preferences updated',
+        emailPreferences: user.emailPreferences 
+      });
+
+    } catch (error) {
+      console.error('Update email preferences error:', error);
+      res.status(500).json({ error: 'Failed to update preferences' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /auth/profile/addresses:
+ *   post:
+ *     summary: Add a new address
+ *     description: Add a new shipping or billing address. First address is automatically set as default.
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - firstName
+ *               - lastName
+ *               - addressLine1
+ *               - city
+ *               - postalCode
+ *               - country
+ *               - phone
+ *             properties:
+ *               type:
+ *                 type: string
+ *                 enum: [shipping, billing]
+ *                 default: shipping
+ *                 example: shipping
+ *               firstName:
+ *                 type: string
+ *                 example: John
+ *               lastName:
+ *                 type: string
+ *                 example: Doe
+ *               company:
+ *                 type: string
+ *                 example: Acme Corp
+ *               addressLine1:
+ *                 type: string
+ *                 example: Via Roma 123
+ *               addressLine2:
+ *                 type: string
+ *                 example: Apartment 4B
+ *               city:
+ *                 type: string
+ *                 example: Milano
+ *               state:
+ *                 type: string
+ *                 example: MI
+ *               postalCode:
+ *                 type: string
+ *                 example: 20100
+ *               country:
+ *                 type: string
+ *                 example: Italy
+ *               phone:
+ *                 type: string
+ *                 example: +39 123 456 7890
+ *               isDefault:
+ *                 type: boolean
+ *                 example: false
+ *     responses:
+ *       201:
+ *         description: Address added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Address added successfully
+ *                 address:
+ *                   type: object
+ *                   properties:
+ *                     _id:
+ *                       type: string
+ *                       example: 507f1f77bcf86cd799439011
+ *                     type:
+ *                       type: string
+ *                       example: shipping
+ *                     firstName:
+ *                       type: string
+ *                       example: John
+ *                     lastName:
+ *                       type: string
+ *                       example: Doe
+ *                     company:
+ *                       type: string
+ *                       example: Acme Corp
+ *                     addressLine1:
+ *                       type: string
+ *                       example: Via Roma 123
+ *                     addressLine2:
+ *                       type: string
+ *                       example: Apartment 4B
+ *                     city:
+ *                       type: string
+ *                       example: Milano
+ *                     state:
+ *                       type: string
+ *                       example: MI
+ *                     postalCode:
+ *                       type: string
+ *                       example: 20100
+ *                     country:
+ *                       type: string
+ *                       example: Italy
+ *                     phone:
+ *                       type: string
+ *                       example: +39 123 456 7890
+ *                     isDefault:
+ *                       type: boolean
+ *                       example: true
+ *       400:
+ *         description: Validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Validation error
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: User not found
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to add address
+ */
+
+router.post('/profile/addresses', 
+  verifyToken,
+  addressValidator,
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await User.findById(req.userId);
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const isFirstAddress = !user.addresses || user.addresses.length === 0;
+      const shouldBeDefault = req.body.isDefault === true || isFirstAddress;
+
+      if (shouldBeDefault && user.addresses) {
+        user.addresses.forEach((addr: any) => {
+          addr.isDefault = false;
+        });
+      }
+
+      const newAddress = {
+        type: req.body.type || 'shipping',
+        firstName: req.body.firstName,
+        lastName: req.body.lastName,
+        company: req.body.company,
+        addressLine1: req.body.addressLine1,
+        addressLine2: req.body.addressLine2,
+        city: req.body.city,
+        state: req.body.state,
+        postalCode: req.body.postalCode,
+        country: req.body.country,
+        phone: req.body.phone,
+        isDefault: shouldBeDefault
+      };
+
+      if (!user.addresses) {
+        user.addresses = [];
+      }
+      user.addresses.push(newAddress as any);
+
+      await user.save();
+
+      await logAuditAction('ADDRESS_ADDED', req, req.userId);
+
+      res.status(201).json({ 
+        message: 'Address added successfully',
+        address: user.addresses[user.addresses.length - 1]
+      });
+
+    } catch (error) {
+      console.error('Add address error:', error);
+      res.status(500).json({ error: 'Failed to add address' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /auth/profile/addresses/{addressId}:
+ *   put:
+ *     summary: Update an existing address
+ *     description: Update all fields of an existing address
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: addressId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: MongoDB ObjectId of the address
+ *         example: 507f1f77bcf86cd799439011
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - firstName
+ *               - lastName
+ *               - addressLine1
+ *               - city
+ *               - postalCode
+ *               - country
+ *               - phone
+ *             properties:
+ *               type:
+ *                 type: string
+ *                 enum: [shipping, billing]
+ *                 example: shipping
+ *               firstName:
+ *                 type: string
+ *                 example: John
+ *               lastName:
+ *                 type: string
+ *                 example: Doe
+ *               company:
+ *                 type: string
+ *                 example: Acme Corp
+ *               addressLine1:
+ *                 type: string
+ *                 example: Via Roma 123
+ *               addressLine2:
+ *                 type: string
+ *                 example: Apartment 4B
+ *               city:
+ *                 type: string
+ *                 example: Milano
+ *               state:
+ *                 type: string
+ *                 example: MI
+ *               postalCode:
+ *                 type: string
+ *                 example: 20100
+ *               country:
+ *                 type: string
+ *                 example: Italy
+ *               phone:
+ *                 type: string
+ *                 example: +39 123 456 7890
+ *               isDefault:
+ *                 type: boolean
+ *                 example: false
+ *     responses:
+ *       200:
+ *         description: Address updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Address updated successfully
+ *                 address:
+ *                   type: object
+ *                   properties:
+ *                     _id:
+ *                       type: string
+ *                       example: 507f1f77bcf86cd799439011
+ *                     type:
+ *                       type: string
+ *                       example: shipping
+ *                     firstName:
+ *                       type: string
+ *                       example: John
+ *                     lastName:
+ *                       type: string
+ *                       example: Doe
+ *                     company:
+ *                       type: string
+ *                       example: Acme Corp
+ *                     addressLine1:
+ *                       type: string
+ *                       example: Via Roma 123
+ *                     addressLine2:
+ *                       type: string
+ *                       example: Apartment 4B
+ *                     city:
+ *                       type: string
+ *                       example: Milano
+ *                     state:
+ *                       type: string
+ *                       example: MI
+ *                     postalCode:
+ *                       type: string
+ *                       example: 20100
+ *                     country:
+ *                       type: string
+ *                       example: Italy
+ *                     phone:
+ *                       type: string
+ *                       example: +39 123 456 7890
+ *                     isDefault:
+ *                       type: boolean
+ *                       example: true
+ *       400:
+ *         description: Invalid address ID or validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Invalid address ID
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User or address not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Address not found
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to update address
+ */
+
+router.put('/profile/addresses/:addressId',
+  verifyToken,
+  param('addressId').isMongoId().withMessage('Invalid address ID'),
+  addressValidator,
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await User.findById(req.userId);
+      
+      if (!user || !user.addresses) {
+        return res.status(404).json({ error: 'User or addresses not found' });
+      }
+
+      const address = user.addresses.find((a: any) => 
+        a._id.toString() === req.params.addressId
+      );
+
+      if (!address) {
+        return res.status(404).json({ error: 'Address not found' });
+      }
+
+      // Update fields
+      Object.assign(address, {
+        type: req.body.type || address.type,
+        firstName: req.body.firstName,
+        lastName: req.body.lastName,
+        company: req.body.company,
+        addressLine1: req.body.addressLine1,
+        addressLine2: req.body.addressLine2,
+        city: req.body.city,
+        state: req.body.state,
+        postalCode: req.body.postalCode,
+        country: req.body.country,
+        phone: req.body.phone
+      });
+
+      // Handle default
+      if (req.body.isDefault === true) {
+        user.addresses.forEach((addr: any) => {
+          addr.isDefault = false;
+        });
+        (address as any).isDefault = true;
+      }
+
+      await user.save();
+
+      await logAuditAction('ADDRESS_UPDATED', req, req.userId);
+
+      res.json({ 
+        message: 'Address updated successfully',
+        address 
+      });
+
+    } catch (error) {
+      console.error('Update address error:', error);
+      res.status(500).json({ error: 'Failed to update address' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /auth/profile/addresses/{addressId}:
+ *   delete:
+ *     summary: Delete an address
+ *     description: Remove an address from user's saved addresses
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: addressId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: MongoDB ObjectId of the address
+ *         example: 507f1f77bcf86cd799439011
+ *     responses:
+ *       200:
+ *         description: Address deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Address deleted successfully
+ *       400:
+ *         description: Invalid address ID
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Invalid address ID
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User or address not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Address not found
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to delete address
+ */
+
+router.delete('/profile/addresses/:addressId',
+  verifyToken,
+  param('addressId').isMongoId().withMessage('Invalid address ID'),
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await User.findById(req.userId);
+      
+      if (!user || !user.addresses) {
+        return res.status(404).json({ error: 'User or addresses not found' });
+      }
+
+      const addressIndex = user.addresses.findIndex((a: any) => 
+        a._id.toString() === req.params.addressId
+      );
+
+      if (addressIndex === -1) {
+        return res.status(404).json({ error: 'Address not found' });
+      }
+
+      user.addresses.splice(addressIndex, 1);
+      await user.save();
+
+      await logAuditAction('ADDRESS_DELETED', req, req.userId);
+
+      res.json({ message: 'Address deleted successfully' });
+
+    } catch (error) {
+      console.error('Delete address error:', error);
+      res.status(500).json({ error: 'Failed to delete address' });
+    }
+  }
+);
 
 /**
  * @swagger
@@ -881,7 +2275,7 @@ router.delete('/revoke-token/:tokenId',
  * /auth/account:
  *   delete:
  *     summary: Delete own account
- *     description: Permanently delete the authenticated user's account and all associated data
+ *     description: Permanently delete the authenticated user's account and all associated data (avatar, tokens, login history, password reset tokens)
  *     tags: [User]
  *     security:
  *       - bearerAuth: []
@@ -899,20 +2293,74 @@ router.delete('/revoke-token/:tokenId',
  *                 type: string
  *                 format: password
  *                 description: Current password for confirmation
+ *                 example: SecurePass123!
  *               confirmation:
  *                 type: string
  *                 example: DELETE
- *                 description: Type "DELETE" to confirm
+ *                 description: Type "DELETE" to confirm account deletion
  *     responses:
  *       200:
  *         description: Account deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Account deleted successfully
+ *                 deletedAt:
+ *                   type: string
+ *                   format: date-time
+ *                   example: 2026-02-05T22:12:00.000Z
  *       400:
- *         description: Invalid password or confirmation
+ *         description: Invalid password, confirmation text, or validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - type: object
+ *                   properties:
+ *                     error:
+ *                       type: string
+ *                       example: Incorrect password
+ *                 - type: object
+ *                   properties:
+ *                     error:
+ *                       type: string
+ *                       example: Type DELETE to confirm
  *       401:
- *         description: Unauthorized
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       404:
+ *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: User not found
  *       500:
  *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to delete account
  */
+
 router.delete('/account', 
   verifyToken,
   body('password').notEmpty().withMessage('Password is required'),
@@ -934,14 +2382,34 @@ router.delete('/account',
         return res.status(400).json({ error: 'Incorrect password' });
       }
 
-      // LOG AUDIT: Account deleted (prima di eliminare)
+      // Delete avatar file if exists
+      if (user.avatar) {
+        try {
+          await deleteAvatarFile(user.avatar);
+          if (ENABLE_LOGS) {
+            console.log(`[Delete Account] Avatar deleted for user ${user._id}`);
+          }
+        } catch (avatarError) {
+          console.error('[Delete Account] Failed to delete avatar file:', avatarError);
+          // Do not block account deletion if avatar deletion fails
+        }
+      }
+
+      // LOG AUDIT: Account deleted
       await logAuditAction('ACCOUNT_DELETED', req, req.userId, undefined, {
         email: user.email,
-        username: user.username
+        username: user.username,
+        hadAvatar: !!user.avatar
       });
 
       // Delete all refresh tokens
       await RefreshToken.deleteMany({ user: user._id });
+
+      // Delete login history
+      await LoginHistory.deleteMany({ user: user._id });
+
+      // Delete password reset tokens
+      await PasswordResetToken.deleteMany({ user: user._id });
 
       // Delete user account
       await User.findByIdAndDelete(user._id);

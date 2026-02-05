@@ -2,22 +2,23 @@ import { RefreshToken } from '../models/refreshToken.model';
 import { ENABLE_LOGS } from '../config/env';
 import { PasswordResetToken } from '../models/passwordResetToken.model';
 import { LoginHistory } from '../models/loginHistory.model';
+import { User } from '../models/user.model';
+import fs from 'fs';
+import path from 'path';
 
 /**
- *Delete expired refresh tokens from the database
+ * Delete expired refresh tokens from the database
  */
 export async function cleanupExpiredTokens(): Promise<number> {
   try {
-    // Cleanup refresh tokens
     const refreshResult = await RefreshToken.deleteMany({
       expires: { $lt: new Date() }
     });
 
-    // Cleanup password reset tokens (already managed by TTL index, but for security)
     const resetResult = await PasswordResetToken.deleteMany({
       $or: [
         { expires: { $lt: new Date() } },
-        { used: true, usedAt: { $lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } } // Elimina token usati dopo 7 giorni
+        { used: true, usedAt: { $lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } }
       ]
     });
 
@@ -83,20 +84,105 @@ export async function cleanupLoginHistory(): Promise<number> {
 }
 
 /**
+ * Delete orphaned avatar files (files not referenced in database)
+ */
+export async function cleanupOrphanedAvatars(): Promise<number> {
+  const uploadsDir = path.join(__dirname, '../../uploads/avatars');
+  
+  try {
+    // Verify that the directory exists
+    if (!fs.existsSync(uploadsDir)) {
+      if (ENABLE_LOGS) {
+        console.log('[Cleanup] Avatars directory does not exist, skipping cleanup');
+      }
+      return 0;
+    }
+
+    // Get all files in the directory
+    const files = fs.readdirSync(uploadsDir);
+    
+    if (files.length === 0) {
+      if (ENABLE_LOGS) {
+        console.log('[Cleanup] No avatar files to clean');
+      }
+      return 0;
+    }
+
+    // Get all avatars currently in use in the database
+    const users = await User.find({ 
+      avatar: { $exists: true, $ne: null } 
+    }).select('avatar');
+    
+    // Create a Set with the filenames in use
+    const avatarsInUse = new Set(
+      users
+        .map(u => u.avatar?.split('/').pop())
+        .filter(Boolean) as string[]
+    );
+
+    let deletedCount = 0;
+    
+    // Delete orphaned files
+    for (const file of files) {
+      if (!avatarsInUse.has(file)) {
+        const filePath = path.join(uploadsDir, file);
+        
+        try {
+          fs.unlinkSync(filePath);
+          deletedCount++;
+          
+          if (ENABLE_LOGS) {
+            console.log(`[Cleanup] Deleted orphaned avatar: ${file}`);
+          }
+        } catch (fileError) {
+          console.error(`[Cleanup] Failed to delete file ${file}:`, fileError);
+        }
+      }
+    }
+    
+    if (ENABLE_LOGS) {
+      console.log(`[Cleanup] Deleted ${deletedCount} orphaned avatar file(s)`);
+    }
+    
+    return deletedCount;
+    
+  } catch (error) {
+    console.error('[Cleanup] Error during avatar cleanup:', error);
+    return 0;
+  }
+}
+
+/**
  * Start automatic cleanup every 24 hours
  */
 export function startCleanupScheduler() {
   // Run immediately on startup
-  cleanupExpiredTokens();
-  cleanupPasswordResetTokens();
-  cleanupLoginHistory();
+  const runCleanup = async () => {
+    console.log('\n🧹 Starting scheduled cleanup...');
+    const startTime = Date.now();
+    
+    const tokens = await cleanupExpiredTokens();
+    const resetTokens = await cleanupPasswordResetTokens();
+    const loginHistory = await cleanupLoginHistory();
+    const avatars = await cleanupOrphanedAvatars();
+    
+    const duration = Date.now() - startTime;
+    const total = tokens + resetTokens + loginHistory + avatars;
+    
+    console.log(`\n✅ Cleanup completed in ${duration}ms`);
+    console.log(`📊 Summary:`);
+    console.log(`   - Tokens: ${tokens}`);
+    console.log(`   - Reset tokens: ${resetTokens}`);
+    console.log(`   - Login history: ${loginHistory}`);
+    console.log(`   - Avatar files: ${avatars}`);
+    console.log(`   - Total: ${total} items cleaned\n`);
+  };
+
+  // Run immediately
+  runCleanup();
 
   // Then every 24 hours
-  setInterval(() => {
-    cleanupExpiredTokens();
-    cleanupPasswordResetTokens();
-    cleanupLoginHistory();
-  }, 24 * 60 * 60 * 1000);
+  setInterval(runCleanup, 24 * 60 * 60 * 1000);
 
   console.log('✅ Cleanup scheduler started (runs every 24 hours)');
 }

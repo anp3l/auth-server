@@ -50,7 +50,6 @@ const loginHistorySchema = new Schema<ILoginHistory>({
 
 loginHistorySchema.index({ user: 1, loginAt: -1 });
 loginHistorySchema.index({ ipAddress: 1 });
-loginHistorySchema.index({ loginAt: 1 });
 
 loginHistorySchema.index({ loginAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
 

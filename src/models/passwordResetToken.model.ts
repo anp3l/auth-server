@@ -43,7 +43,6 @@ const passwordResetTokenSchema = new Schema<IPasswordResetToken>({
 
 // Index for performance and automatic cleanup
 passwordResetTokenSchema.index({ expires: 1 }, { expireAfterSeconds: 0 }); // TTL index - MongoDB elimina automaticamente
-passwordResetTokenSchema.index({ token: 1 });
 passwordResetTokenSchema.index({ user: 1 });
 
 export const PasswordResetToken = model<IPasswordResetToken>('PasswordResetToken', passwordResetTokenSchema);

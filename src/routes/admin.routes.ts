@@ -574,4 +574,178 @@ router.get('/users/:id/audit-logs',
   }
 );
 
+/**
+ * @swagger
+ * /admin/users/{id}/ban:
+ *   put:
+ *     summary: Ban a user
+ *     description: Ban a user account and revoke all active tokens
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reason
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 minLength: 10
+ *                 example: Violation of terms of service
+ *     responses:
+ *       200:
+ *         description: User banned successfully
+ *       404:
+ *         description: User not found
+ *       400:
+ *         description: Validation error
+ *       500:
+ *         description: Server error
+ */
+router.put('/users/:id/ban',
+  param('id').isMongoId().withMessage('Invalid user ID'),
+  body('reason').isString().trim().isLength({ min: 10 }).withMessage('Ban reason must be at least 10 characters'),
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { reason } = req.body;
+      const userId = req.params.id;
+      
+      if (userId === req.userId) {
+        return res.status(400).json({ error: 'Cannot ban yourself' });
+      }
+      
+      const user = await User.findByIdAndUpdate(
+        userId,
+        { 
+          isBanned: true, 
+          banReason: reason 
+        },
+        { new: true }
+      );
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      if (user.role === 'admin') {
+        return res.status(403).json({ error: 'Cannot ban admin users' });
+      }
+      
+      // Revoca tutti i token
+      const revokedTokens = await RefreshToken.updateMany(
+        { user: user._id, revoked: { $exists: false } },
+        { 
+          revoked: new Date(), 
+          revokedByIp: 'admin-ban' 
+        }
+      );
+      
+      // Log audit
+      await logAuditAction(
+        'USER_BANNED', 
+        req, 
+        user._id.toString(), 
+        req.userId,
+        { 
+          reason,
+          revokedTokens: revokedTokens.modifiedCount
+        }
+      );
+      
+      res.json({ 
+        message: 'User banned successfully', 
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          isBanned: user.isBanned,
+          banReason: user.banReason
+        },
+        tokensRevoked: revokedTokens.modifiedCount
+      });
+      
+    } catch (error) {
+      console.error('Ban user error:', error);
+      res.status(500).json({ error: 'Failed to ban user' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /admin/users/{id}/unban:
+ *   put:
+ *     summary: Unban a user
+ *     description: Remove ban from a user account
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: User unbanned successfully
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Server error
+ */
+router.put('/users/:id/unban',
+  param('id').isMongoId().withMessage('Invalid user ID'),
+  validateRequest,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await User.findByIdAndUpdate(
+        req.params.id,
+        { 
+          isBanned: false, 
+          banReason: undefined
+        },
+        { new: true }
+      );
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Log audit
+      await logAuditAction(
+        'USER_UNBANNED', 
+        req, 
+        user._id.toString(), 
+        req.userId
+      );
+      
+      res.json({ 
+        message: 'User unbanned successfully', 
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          isBanned: user.isBanned
+        }
+      });
+      
+    } catch (error) {
+      console.error('Unban user error:', error);
+      res.status(500).json({ error: 'Failed to unban user' });
+    }
+  }
+);
+
 export default router;

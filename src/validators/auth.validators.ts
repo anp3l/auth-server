@@ -95,20 +95,125 @@ export const updateProfileValidator: ValidationChain[] = [
     .withMessage('Last name can only contain letters, spaces, hyphens and apostrophes')
     .escape(),
   
-  body('shippingAddress')
-    .optional()
-    .isObject()
-    .withMessage('Shipping address must be an object'),
-  
-  body('shippingAddress.street')
+  body('email')
     .optional()
     .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('Street must be between 1 and 100 characters')
+    .isEmail()
+    .withMessage('Must be a valid email address')
+    .normalizeEmail()
+    .toLowerCase(),
+  
+  body('phone')
+    .optional()
+    .trim()
+    .matches(/^\+?[1-9]\d{1,14}$/)
+    .withMessage('Invalid phone number format (E.164)'),
+  
+  body('dateOfBirth')
+    .optional()
+    .isISO8601()
+    .withMessage('Invalid date format')
+    .toDate()
+    .custom((value) => {
+      const birthDate = new Date(value);
+      const today = new Date();
+      const age = today.getFullYear() - birthDate.getFullYear();
+      if (age < 13 || age > 120) {
+        throw new Error('Age must be between 13 and 120 years');
+      }
+      return true;
+    }),
+  
+  body('gender')
+    .optional()
+    .isIn(['male', 'female', 'other'])
+    .withMessage('Gender must be male, female or other'),
+  
+  body('bio')
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('Bio must be max 500 characters')
     .escape(),
   
-  body('shippingAddress.city')
+  body('avatar')
     .optional()
+    .trim()
+    .isURL()
+    .withMessage('Avatar must be a valid URL')
+];
+
+/**
+ * Validator for email preferences
+ */
+export const updateEmailPreferencesValidator: ValidationChain[] = [
+  body('newsletter')
+    .optional()
+    .isBoolean()
+    .withMessage('Newsletter preference must be a boolean'),
+  
+  body('notifications')
+    .optional()
+    .isBoolean()
+    .withMessage('Notifications preference must be a boolean'),
+  
+  body('language')
+    .optional()
+    .isIn(['it', 'en', 'es', 'fr', 'de'])
+    .withMessage('Language must be one of: it, en, es, fr, de'),
+  
+  body('currency')
+    .optional()
+    .isIn(['EUR', 'USD', 'GBP'])
+    .withMessage('Currency must be one of: EUR, USD, GBP')
+];
+
+/**
+ * Validator for adding/updating address
+ */
+export const addressValidator: ValidationChain[] = [
+  body('type')
+    .optional()
+    .isIn(['shipping', 'billing', 'both'])
+    .withMessage('Address type must be shipping, billing or both'),
+  
+  body('firstName')
+    .trim()
+    .isLength({ min: 1, max: 50 })
+    .withMessage('First name must be between 1 and 50 characters')
+    .matches(/^[a-zA-ZÀ-ÿ\s'-]+$/)
+    .withMessage('First name can only contain letters, spaces, hyphens and apostrophes')
+    .escape(),
+  
+  body('lastName')
+    .trim()
+    .isLength({ min: 1, max: 50 })
+    .withMessage('Last name must be between 1 and 50 characters')
+    .matches(/^[a-zA-ZÀ-ÿ\s'-]+$/)
+    .withMessage('Last name can only contain letters, spaces, hyphens and apostrophes')
+    .escape(),
+  
+  body('company')
+    .optional()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('Company name must be max 100 characters')
+    .escape(),
+  
+  body('addressLine1')
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('Address line 1 must be between 1 and 100 characters')
+    .escape(),
+  
+  body('addressLine2')
+    .optional()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('Address line 2 must be max 100 characters')
+    .escape(),
+  
+  body('city')
     .trim()
     .isLength({ min: 1, max: 50 })
     .withMessage('City must be between 1 and 50 characters')
@@ -116,22 +221,37 @@ export const updateProfileValidator: ValidationChain[] = [
     .withMessage('City can only contain letters, spaces, hyphens and apostrophes')
     .escape(),
   
-  body('shippingAddress.postalCode')
-    .optional()
+  body('state')
+    .trim()
+    .isLength({ min: 1, max: 50 })
+    .withMessage('State must be between 1 and 50 characters')
+    .escape(),
+  
+  body('postalCode')
     .trim()
     .matches(/^[A-Z0-9\s-]{3,10}$/i)
     .withMessage('Invalid postal code format')
     .escape(),
   
-  body('shippingAddress.country')
-    .optional()
+  body('country')
     .trim()
     .isLength({ min: 2, max: 50 })
     .withMessage('Country must be between 2 and 50 characters')
     .matches(/^[a-zA-ZÀ-ÿ\s'-]+$/)
     .withMessage('Country can only contain letters, spaces, hyphens and apostrophes')
-    .escape()
+    .escape(),
+  
+  body('phone')
+    .trim()
+    .matches(/^\+?[1-9]\d{1,14}$/)
+    .withMessage('Invalid phone number format (E.164)'),
+  
+  body('isDefault')
+    .optional()
+    .isBoolean()
+    .withMessage('isDefault must be a boolean')
 ];
+
 
 /**
  * Validator for change password
