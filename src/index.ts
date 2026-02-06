@@ -12,6 +12,9 @@ import { version } from '../package.json';
 import { apiLimiter } from './middleware/rateLimiter.middleware';
 import { startCleanupScheduler } from './tasks/cleanup.task';
 import path from 'path';
+import cookieParser from 'cookie-parser';
+import csrf from 'csurf';
+import { COOKIE_DOMAIN, COOKIE_SECURE, COOKIE_SAMESITE, CSRF_SECRET } from './config/env';
 
 const app = express();
 const port = PORT;
@@ -116,8 +119,8 @@ const corsOptions = {
     : '*',
   credentials: true,
   optionsSuccessStatus: 200,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],  // ✅ AGGIUNTO
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']  // ✅ AGGIUNTO
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token']
 };
 app.use(cors(corsOptions));
 
@@ -125,6 +128,18 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Cookie parser (deve venire PRIMA di CSRF)
+app.use(cookieParser(CSRF_SECRET));
+
+// CSRF protection (solo per route che modificano dati)
+const csrfProtection = csrf({ 
+  cookie: { 
+    httpOnly: true,
+    secure: COOKIE_SECURE,
+    sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+    domain: COOKIE_DOMAIN
+  } 
+});
 app.set('trust proxy', 1);
 
 // === LOGGING MIDDLEWARE ===
@@ -208,6 +223,23 @@ mongoConnection.then(() => {
 });
 
 // === ROUTES ===
+
+app.get('/auth/csrf-token', csrfProtection, (req, res) => {
+  res.json({ csrfToken: req.csrfToken() });
+});
+
+app.use('/auth/login', csrfProtection);
+app.use('/auth/signup', csrfProtection);
+app.use('/auth/change-password', csrfProtection);
+app.use('/auth/forgot-password', csrfProtection);
+app.use('/auth/reset-password', csrfProtection);
+app.use('/auth/revoke-token', csrfProtection);
+
+app.put('/admin/users/:id/role', csrfProtection);
+app.delete('/admin/users/:id', csrfProtection);
+app.put('/admin/users/:id/ban', csrfProtection);
+app.put('/admin/users/:id/unban', csrfProtection);
+
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 

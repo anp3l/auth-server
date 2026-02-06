@@ -18,7 +18,7 @@ import { forgotPasswordValidator, resetPasswordValidator } from '../validators/a
 import { logLoginAttempt, logAuditAction } from '../services/audit.service';
 import { LoginHistory } from '../models/loginHistory.model';
 import { avatarUpload, deleteAvatarFile } from '../middleware/upload.middleware';
-import { ENABLE_LOGS } from '../config/env';
+import { ENABLE_LOGS, COOKIE_DOMAIN, COOKIE_SAMESITE, COOKIE_SECURE } from '../config/env';
 
 const router = Router();
 
@@ -95,7 +95,7 @@ function getIpAddress(req: Request): string {
  * /auth/signup:
  *   post:
  *     summary: Register a new user
- *     description: Create a new user account. Returns access token (15min) and refresh token (7 days).
+ *     description: Create a new user account. Sets HttpOnly cookies with access token (15min) and refresh token (7 days).
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -130,7 +130,13 @@ function getIpAddress(req: Request): string {
  *                 example: Doe
  *     responses:
  *       201:
- *         description: User registered successfully
+ *         description: User registered successfully. Authentication cookies set automatically.
+ *         headers:
+ *           Set-Cookie:
+ *             description: HttpOnly cookies containing accessToken and refreshToken
+ *             schema:
+ *               type: string
+ *               example: accessToken=eyJhbGc...; HttpOnly; Secure; SameSite=Strict
  *         content:
  *           application/json:
  *             schema:
@@ -139,24 +145,22 @@ function getIpAddress(req: Request): string {
  *                 message:
  *                   type: string
  *                   example: User created
- *                 accessToken:
- *                   type: string
- *                   description: JWT access token (expires in 15 minutes)
- *                 refreshToken:
- *                   type: string
- *                   description: Refresh token (expires in 7 days)
  *                 user:
  *                   type: object
  *                   properties:
  *                     id:
  *                       type: string
+ *                       example: 507f1f77bcf86cd799439011
  *                     username:
  *                       type: string
+ *                       example: johndoe
  *                     email:
  *                       type: string
+ *                       example: john@example.com
  *                     role:
  *                       type: string
  *                       enum: [customer, admin]
+ *                       example: customer
  *       400:
  *         description: Validation error
  *       409:
@@ -164,6 +168,7 @@ function getIpAddress(req: Request): string {
  *       500:
  *         description: Server error
  */
+
 router.post('/signup', authLimiter, signupValidator, validateRequest, async (req: Request, res: Response) => {
   try {
     const { username, email, password, firstName, lastName } = req.body;
@@ -208,10 +213,25 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
       console.error('Failed to send welcome email:', emailError);
     }
     
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 15 * 60 * 1000,
+      domain: COOKIE_DOMAIN
+    });
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/auth/refresh-token',
+      domain: COOKIE_DOMAIN
+    });
+
     res.status(201).json({ 
-      message: 'User created', 
-      accessToken,
-      refreshToken,
+      message: 'User created',
       user: { 
         id: user._id, 
         username: user.username,
@@ -231,7 +251,7 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
  * /auth/login:
  *   post:
  *     summary: Authenticate a user
- *     description: User login with email and password. Returns access token and refresh token.
+ *     description: User login with email and password. Sets HttpOnly cookies with access token and refresh token.
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -253,18 +273,21 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
  *                 example: SecurePass123!
  *     responses:
  *       200:
- *         description: Login successful
+ *         description: Login successful. Authentication cookies set automatically.
+ *         headers:
+ *           Set-Cookie:
+ *             description: HttpOnly cookies containing accessToken and refreshToken
+ *             schema:
+ *               type: string
+ *               example: accessToken=eyJhbGc...; HttpOnly; Secure; SameSite=Strict
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
- *                 accessToken:
+ *                 message:
  *                   type: string
- *                   example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
- *                 refreshToken:
- *                   type: string
- *                   example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+ *                   example: Login successful
  *                 user:
  *                   type: object
  *                   properties:
@@ -279,7 +302,7 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
  *                       example: john@example.com
  *                     role:
  *                       type: string
- *                       example: user
+ *                       example: customer
  *                     firstName:
  *                       type: string
  *                       example: John
@@ -289,27 +312,11 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
  *                     avatar:
  *                       type: string
  *                       nullable: true
- *                       example: https://example.com/avatars/johndoe.jpg
+ *                       example: /uploads/avatars/johndoe.jpg
  *       400:
  *         description: Validation error
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *                   example: Validation error
  *       401:
  *         description: Invalid credentials
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *                   example: Invalid credentials
  *       403:
  *         description: Account banned or inactive
  *         content:
@@ -323,30 +330,12 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
  *                 reason:
  *                   type: string
  *                   example: Your account has been suspended. Contact support for more information.
- *                 message:
- *                   type: string
- *                   example: Your account is not active. Please contact support.
  *       429:
  *         description: Too many login attempts
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *                   example: Too many requests
  *       500:
  *         description: Server error
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *                   example: Login failed
  */
+
 router.post('/login', authLimiter, loginValidator, validateRequest, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
@@ -394,9 +383,25 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
     // Generate refresh token
     const refreshToken = await generateAndSaveRefreshToken(user._id.toString(), getIpAddress(req));
 
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 15 * 60 * 1000, // 15 minuti
+      domain: COOKIE_DOMAIN
+    });
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 giorni
+      path: '/auth/refresh-token',
+      domain: COOKIE_DOMAIN
+    });
+
     res.json({ 
-      accessToken,
-      refreshToken,
+      message: 'Login successful',
       user: { 
         id: user._id, 
         username: user.username,
@@ -419,43 +424,45 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
  * /auth/refresh-token:
  *   post:
  *     summary: Refresh access token
- *     description: Generate a new access token using a valid refresh token. The old refresh token is revoked and replaced.
+ *     description: Generate a new access token using the refresh token from HttpOnly cookies. Old tokens are automatically rotated.
  *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - refreshToken
- *             properties:
- *               refreshToken:
- *                 type: string
- *                 description: The refresh token received during login/signup
  *     responses:
  *       200:
- *         description: Tokens refreshed successfully
+ *         description: Tokens refreshed successfully. New cookies set automatically.
+ *         headers:
+ *           Set-Cookie:
+ *             description: Updated HttpOnly cookies with new tokens
+ *             schema:
+ *               type: string
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
- *                 accessToken:
+ *                 message:
  *                   type: string
- *                 refreshToken:
- *                   type: string
- *                   description: New refresh token (old one is revoked)
- *       400:
- *         description: Refresh token is required
+ *                   example: Tokens refreshed successfully
  *       401:
  *         description: Invalid or expired refresh token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Refresh token not found
  *       500:
  *         description: Server error
  */
-router.post('/refresh-token', refreshTokenValidator, validateRequest, async (req: Request, res: Response) => {
+
+router.post('/refresh-token', async (req: Request, res: Response) => {
   try {
-    const { refreshToken: token } = req.body;
+    const token = req.cookies.refreshToken; // ← Leggi da cookie
+    
+    if (!token) {
+      return res.status(401).json({ error: 'Refresh token not found' });
+    }
     
     const refreshToken = await RefreshToken.findOne({ token }).populate('user');
     
@@ -465,24 +472,37 @@ router.post('/refresh-token', refreshTokenValidator, validateRequest, async (req
 
     const user = refreshToken.user as any;
 
-    // Revoke old refresh token
+    // Revoca il vecchio token
     refreshToken.revoked = new Date();
     refreshToken.revokedByIp = getIpAddress(req);
     
-    // Generate new access token
+    // Genera nuovi token
     const newAccessToken = generateAccessToken(user._id.toString(), user.username, user.role);
-    
-    // Generate new refresh token
     const newRefreshToken = await generateAndSaveRefreshToken(user._id.toString(), getIpAddress(req));
     
-    // Save reference to the new token
+    // Salva riferimento al nuovo token
     refreshToken.replacedByToken = newRefreshToken;
     await refreshToken.save();
 
-    res.json({ 
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken
+    // Set cookies con i nuovi token
+    res.cookie('accessToken', newAccessToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 15 * 60 * 1000,
+      domain: COOKIE_DOMAIN
     });
+
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/auth/refresh-token',
+      domain: COOKIE_DOMAIN
+    });
+
+    res.json({ message: 'Tokens refreshed successfully' });
 
   } catch (error) {
     console.error('Refresh token error:', error);
@@ -495,24 +515,19 @@ router.post('/refresh-token', refreshTokenValidator, validateRequest, async (req
  * /auth/revoke-token:
  *   post:
  *     summary: Revoke refresh token (logout)
- *     description: Invalidate a refresh token to log out the user.
+ *     description: Invalidate refresh token to log out the user and clear authentication cookies. Refresh token is read from HttpOnly cookies automatically.
  *     tags: [Auth]
  *     security:
  *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - refreshToken
- *             properties:
- *               refreshToken:
- *                 type: string
  *     responses:
  *       200:
- *         description: Token revoked successfully
+ *         description: Logout successful. Authentication cookies cleared.
+ *         headers:
+ *           Set-Cookie:
+ *             description: Cleared authentication cookies
+ *             schema:
+ *               type: string
+ *               example: accessToken=; Expires=Thu, 01 Jan 1970 00:00:00 GMT
  *         content:
  *           application/json:
  *             schema:
@@ -520,20 +535,45 @@ router.post('/refresh-token', refreshTokenValidator, validateRequest, async (req
  *               properties:
  *                 message:
  *                   type: string
- *                   example: Token revoked
+ *                   example: Logout successful
  *       400:
- *         description: Refresh token is required
+ *         description: Refresh token not found in cookies
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Refresh token not found in cookies
  *       401:
  *         description: Unauthorized or invalid token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Invalid refresh token
  *       500:
  *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Token revocation failed
  */
+
 router.post('/revoke-token', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { refreshToken: token } = req.body;
+    const token = req.cookies.refreshToken;
     
     if (!token) {
-      return res.status(400).json({ error: 'Refresh token is required' });
+      return res.status(400).json({ error: 'Refresh token not found in cookies' });
     }
     
     const refreshToken = await RefreshToken.findOne({ token });
@@ -542,12 +582,31 @@ router.post('/revoke-token', verifyToken, async (req: AuthRequest, res: Response
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
-    // Revoke the token
+    // Revoca il token
     refreshToken.revoked = new Date();
     refreshToken.revokedByIp = getIpAddress(req);
     await refreshToken.save();
 
-    res.json({ message: 'Token revoked' });
+    // LOG AUDIT: Logout
+    await logAuditAction('USER_LOGOUT', req, req.userId);
+
+    // Clear authentication cookies
+    res.clearCookie('accessToken', { 
+      httpOnly: true, 
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      domain: COOKIE_DOMAIN
+    });
+    
+    res.clearCookie('refreshToken', { 
+      httpOnly: true, 
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      path: '/auth/refresh-token',
+      domain: COOKIE_DOMAIN
+    });
+
+    res.json({ message: 'Logout successful' });
 
   } catch (error) {
     console.error('Revoke token error:', error);
@@ -596,6 +655,7 @@ router.post('/revoke-token', verifyToken, async (req: AuthRequest, res: Response
  *       500:
  *         description: Server error
  */
+
 router.get('/profile', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const user = await User.findById(req.userId).select('-password');
@@ -773,6 +833,7 @@ router.get('/profile', verifyToken, async (req: AuthRequest, res: Response) => {
  *                   type: string
  *                   example: Failed to update profile
  */
+
 router.patch('/profile', 
   verifyToken,
   updateProfileValidator,
@@ -891,6 +952,7 @@ router.patch('/profile',
  *       500:
  *         description: Server error
  */
+
 router.post('/change-password', verifyToken, changePasswordValidator, validateRequest, async (req: AuthRequest, res: Response) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -2129,6 +2191,7 @@ router.delete('/profile/addresses/:addressId',
  *       500:
  *         description: Server error
  */
+
 router.get('/refresh-tokens', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const tokens = await RefreshToken.find({ 
@@ -2182,6 +2245,7 @@ router.get('/refresh-tokens', verifyToken, async (req: AuthRequest, res: Respons
  *       500:
  *         description: Server error
  */
+
 router.post('/revoke-all-tokens', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const result = await RefreshToken.updateMany(
@@ -2238,6 +2302,7 @@ router.post('/revoke-all-tokens', verifyToken, async (req: AuthRequest, res: Res
  *       500:
  *         description: Server error
  */
+
 router.delete('/revoke-token/:tokenId',
   verifyToken,
   param('tokenId').isMongoId().withMessage('Invalid token ID'),
@@ -2464,6 +2529,7 @@ router.delete('/account',
  *       500:
  *         description: Server error
  */
+
 router.post('/forgot-password', authLimiter, forgotPasswordValidator, validateRequest, async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
@@ -2570,6 +2636,7 @@ router.post('/forgot-password', authLimiter, forgotPasswordValidator, validateRe
  *       500:
  *         description: Server error
  */
+
 router.post('/reset-password', resetPasswordValidator, validateRequest, async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
@@ -2660,6 +2727,7 @@ router.post('/reset-password', resetPasswordValidator, validateRequest, async (r
  *       400:
  *         description: Token is invalid or expired
  */
+
 router.post('/verify-reset-token', 
   body('token').isLength({ min: 64, max: 64 }).withMessage('Invalid token format'),
   validateRequest,
@@ -2754,6 +2822,7 @@ router.post('/verify-reset-token',
  *       500:
  *         description: Server error
  */
+
 router.get('/login-history', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);

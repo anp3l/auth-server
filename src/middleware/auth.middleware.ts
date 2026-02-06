@@ -38,17 +38,24 @@ try {
  *   - Token verification fails (invalid signature, expired, etc.)
  */
 export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction) => {
-  const authHeader = req.headers.authorization;
+  // Prova prima dai cookies (priorità)
+  let token = req.cookies?.accessToken;
+  
+  // Fallback: Authorization header (per compatibilità)
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
+    }
+  }
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!token) {
     return res.status(401).json({ error: 'Missing token' });
   }
 
-  const token = authHeader.substring(7);
-
   try {
     const decoded = jwt.verify(token, PUB_KEY, { algorithms: ['RS256'] }) as { 
-      userId: string
+      userId: string;
       username: string;
       role: string;
     };
@@ -61,3 +68,4 @@ export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction)
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
+
