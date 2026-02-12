@@ -240,6 +240,15 @@ app.delete('/admin/users/:id', csrfProtection);
 app.put('/admin/users/:id/ban', csrfProtection);
 app.put('/admin/users/:id/unban', csrfProtection);
 
+app.patch('/auth/profile', csrfProtection);
+app.post('/auth/avatar', csrfProtection);
+app.delete('/auth/avatar', csrfProtection);
+app.post('/auth/profile/addresses', csrfProtection);
+app.put('/auth/profile/addresses/:addressId', csrfProtection);
+app.delete('/auth/profile/addresses/:addressId', csrfProtection);
+app.delete('/auth/account', csrfProtection);
+app.post('/auth/revoke-all-tokens', csrfProtection);
+
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 
