@@ -38,10 +38,10 @@ try {
  *   - Token verification fails (invalid signature, expired, etc.)
  */
 export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction) => {
-  // Prova prima dai cookies (priorità)
+  //Try cookies first (priority)
   let token = req.cookies?.accessToken;
   
-  // Fallback: Authorization header (per compatibilità)
+  // Fallback: Authorization header (for compatibility)
   if (!token) {
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {

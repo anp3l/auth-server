@@ -14,7 +14,7 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    // Formato: avatar-{userId}-{timestamp}.{ext}
+    // Format: avatar-{userId}-{timestamp}.{ext}
     const ext = path.extname(file.originalname);
     const userId = (req as any).userId || 'unknown';
     const uniqueSuffix = Date.now();

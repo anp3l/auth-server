@@ -100,11 +100,11 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "blob:", "validator.swagger.io", "http://localhost:4000"]  // ✅ Aggiungi localhost
+      imgSrc: ["'self'", "data:", "blob:", "validator.swagger.io", "http://localhost:4000"]
     }
   },
   crossOriginEmbedderPolicy: false,
-  crossOriginResourcePolicy: { policy: "cross-origin" },  // ✅ AGGIUNTO!
+  crossOriginResourcePolicy: { policy: "cross-origin" },
   hsts: {
     maxAge: 31536000,
     includeSubDomains: true,
@@ -116,7 +116,7 @@ app.use(helmet({
 const corsOptions = {
   origin: NODE_ENV === 'production' 
     ? ALLOWED_ORIGINS
-    : '*',
+    : 'http://localhost:4200',
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -128,10 +128,10 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Cookie parser (deve venire PRIMA di CSRF)
+// Cookie parser (must come BEFORE CSRF)
 app.use(cookieParser(CSRF_SECRET));
 
-// CSRF protection (solo per route che modificano dati)
+// CSRF protection (only for routes that modify data)
 const csrfProtection = csrf({ 
   cookie: { 
     httpOnly: true,
@@ -155,7 +155,7 @@ if (ENABLE_LOGS) {
 }
 
 app.use('/uploads', (req, res, next) => {
-  // Imposta CORS headers per static files
+  // Set CORS headers for static files
   const origin = req.headers.origin;
   
   if (NODE_ENV === 'production') {

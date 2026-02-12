@@ -218,7 +218,6 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
       maxAge: 15 * 60 * 1000,
-      domain: COOKIE_DOMAIN
     });
 
     res.cookie('refreshToken', refreshToken, {
@@ -226,8 +225,6 @@ router.post('/signup', authLimiter, signupValidator, validateRequest, async (req
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/auth/refresh-token',
-      domain: COOKIE_DOMAIN
     });
 
     res.status(201).json({ 
@@ -387,17 +384,14 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
       httpOnly: true,
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
-      maxAge: 15 * 60 * 1000, // 15 minuti
-      domain: COOKIE_DOMAIN
+      maxAge: 15 * 60 * 1000, // 15 minuts
     });
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 giorni
-      path: '/auth/refresh-token',
-      domain: COOKIE_DOMAIN
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     res.json({ 
@@ -458,7 +452,7 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
 
 router.post('/refresh-token', async (req: Request, res: Response) => {
   try {
-    const token = req.cookies.refreshToken; // ← Leggi da cookie
+    const token = req.cookies.refreshToken; // Read from cookies
     
     if (!token) {
       return res.status(401).json({ error: 'Refresh token not found' });
@@ -472,25 +466,24 @@ router.post('/refresh-token', async (req: Request, res: Response) => {
 
     const user = refreshToken.user as any;
 
-    // Revoca il vecchio token
+    // Revoke the old token
     refreshToken.revoked = new Date();
     refreshToken.revokedByIp = getIpAddress(req);
     
-    // Genera nuovi token
+    // Generate new tokens
     const newAccessToken = generateAccessToken(user._id.toString(), user.username, user.role);
     const newRefreshToken = await generateAndSaveRefreshToken(user._id.toString(), getIpAddress(req));
     
-    // Salva riferimento al nuovo token
+    // Save reference to new token
     refreshToken.replacedByToken = newRefreshToken;
     await refreshToken.save();
 
-    // Set cookies con i nuovi token
+    // Set cookies with new tokens
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
       maxAge: 15 * 60 * 1000,
-      domain: COOKIE_DOMAIN
     });
 
     res.cookie('refreshToken', newRefreshToken, {
@@ -498,8 +491,6 @@ router.post('/refresh-token', async (req: Request, res: Response) => {
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/auth/refresh-token',
-      domain: COOKIE_DOMAIN
     });
 
     res.json({ message: 'Tokens refreshed successfully' });
@@ -582,7 +573,7 @@ router.post('/revoke-token', verifyToken, async (req: AuthRequest, res: Response
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
-    // Revoca il token
+    // Revoke the token
     refreshToken.revoked = new Date();
     refreshToken.revokedByIp = getIpAddress(req);
     await refreshToken.save();
@@ -595,15 +586,14 @@ router.post('/revoke-token', verifyToken, async (req: AuthRequest, res: Response
       httpOnly: true, 
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
-      domain: COOKIE_DOMAIN
+      ...(COOKIE_DOMAIN && { domain: COOKIE_DOMAIN })
     });
     
     res.clearCookie('refreshToken', { 
       httpOnly: true, 
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
-      path: '/auth/refresh-token',
-      domain: COOKIE_DOMAIN
+      ...(COOKIE_DOMAIN && { domain: COOKIE_DOMAIN })
     });
 
     res.json({ message: 'Logout successful' });
@@ -978,7 +968,7 @@ router.post('/change-password', verifyToken, changePasswordValidator, validateRe
     // LOG AUDIT: Password changed
     await logAuditAction('PASSWORD_CHANGED', req, user._id.toString());
 
-    // Revoke all refresh tokens for security (force re-login on all devices)
+    // Revoke all OLD refresh tokens for security (force re-login on all OTHER devices)
     await RefreshToken.updateMany(
       { user: user._id, revoked: { $exists: false } },
       { 
@@ -987,8 +977,27 @@ router.post('/change-password', verifyToken, changePasswordValidator, validateRe
       }
     );
 
+    // Generate NEW tokens for THIS device (keep user logged in)
+    const newAccessToken = generateAccessToken(user._id.toString(), user.username, user.role);
+    const newRefreshToken = await generateAndSaveRefreshToken(user._id.toString(), getIpAddress(req));
+
+    // Set new cookies
+    res.cookie('accessToken', newAccessToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
     res.json({ 
-      message: 'Password changed successfully. Please login again on all devices.'
+      message: 'Password changed successfully. You have been logged out from all other devices for security.'
     });
 
   } catch (error) {
@@ -996,6 +1005,7 @@ router.post('/change-password', verifyToken, changePasswordValidator, validateRe
     res.status(500).json({ error: 'Failed to change password' });
   }
 });
+
 
 // ==================== UPLOAD AVATAR ====================
 
@@ -1116,22 +1126,22 @@ router.post('/avatar',
       const user = await User.findById(req.userId);
       
       if (!user) {
-        // Cancella il file appena caricato se user non esiste
+        // Delete the newly loaded file if user does not exist
         await deleteAvatarFile(`/uploads/avatars/${req.file.filename}`);
         return res.status(404).json({ error: 'User not found' });
       }
 
-      // ✅ Cancella il vecchio avatar se esiste
+      // Delete the old avatar if it exists
       if (user.avatar) {
         try {
           await deleteAvatarFile(user.avatar);
         } catch (error) {
           console.error('Failed to delete old avatar:', error);
-          // Non bloccare l'operazione se la cancellazione fallisce
+          // Do not block the operation if deletion fails
         }
       }
 
-      // Costruisci URL pubblico
+      // Build public URL
       const avatarUrl = `/uploads/avatars/${req.file.filename}`;
 
       user.avatar = avatarUrl;
@@ -1156,7 +1166,7 @@ router.post('/avatar',
     } catch (error) {
       console.error('Upload avatar error:', error);
       
-      // Cleanup: cancella il file se qualcosa va storto
+      // Cleanup: delete the file if something goes wrong
       if (req.file) {
         try {
           await deleteAvatarFile(`/uploads/avatars/${req.file.filename}`);
@@ -1254,15 +1264,15 @@ router.delete('/avatar',
 
       const avatarPath = user.avatar;
 
-      // ✅ Cancella il file fisico
+      // Delete the physical file
       try {
         await deleteAvatarFile(avatarPath);
       } catch (error) {
         console.error('Failed to delete avatar file:', error);
-        // Continua comunque a rimuovere il riferimento dal DB
+        // However, continue to remove the reference from the DB
       }
 
-      // ✅ Rimuovi il riferimento dal DB
+      // Remove reference from DB
       user.avatar = undefined;
       await user.save();
 
@@ -1447,7 +1457,7 @@ router.get('/stats', verifyToken, async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // TODO: Implementa logica per calcolare stats reali
+    // TODO: Implement logic to calculate real stats
     // mock 
     const stats = {
       totalOrders: 0,

@@ -21,7 +21,9 @@ export const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
 
 export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4200';
 
-export const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || 'localhost';
+export const COOKIE_DOMAIN = NODE_ENV === 'production' 
+  ? process.env.COOKIE_DOMAIN 
+  : undefined;
 export const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
-export const COOKIE_SAMESITE = process.env.COOKIE_SAMESITE || 'strict';
+export const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || 'lax') as 'strict' | 'lax' | 'none';
 export const CSRF_SECRET = process.env.CSRF_SECRET!;
