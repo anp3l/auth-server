@@ -342,7 +342,7 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
     if (!user) {
       // LOG: Login failed - user not found
       await logLoginAttempt(null, req, false, 'User not found');
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     if (user.isBanned) {
@@ -365,7 +365,7 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
     if (!isPasswordValid) {
       // LOG: Login failed - password incorrect
       await logLoginAttempt(user._id.toString(), req, false, 'Invalid password');
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     user.lastLogin = new Date();
@@ -605,14 +605,14 @@ router.post('/revoke-token', verifyToken, async (req: AuthRequest, res: Response
       httpOnly: true, 
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
-      ...(COOKIE_DOMAIN && { domain: COOKIE_DOMAIN })
+      domain: COOKIE_DOMAIN
     });
     
     res.clearCookie('refreshToken', { 
       httpOnly: true, 
       secure: COOKIE_SECURE,
       sameSite: COOKIE_SAMESITE as 'strict' | 'lax' | 'none',
-      ...(COOKIE_DOMAIN && { domain: COOKIE_DOMAIN })
+      domain: COOKIE_DOMAIN
     });
 
     res.json({ message: 'Logout successful' });
