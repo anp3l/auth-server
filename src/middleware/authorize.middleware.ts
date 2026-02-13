@@ -36,7 +36,7 @@ export const authorize = (roles: string[] = []) => {
       const user = await User.findById(req.userId).select('role');
       
       if (!user) {
-        return res.status(401).json({ error: 'User not found' });
+        return res.status(401).json({ error: 'Unauthorized' });
       }
 
       // if roles is empty, allow any authenticated user

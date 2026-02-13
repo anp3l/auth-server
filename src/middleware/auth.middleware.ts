@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import path from 'path';
+import { NODE_ENV } from '../config/env';
 
 
 export interface AuthRequest extends Request {
@@ -42,7 +43,8 @@ export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction)
   let token = req.cookies?.accessToken;
   
   // Fallback: Authorization header (for compatibility)
-  if (!token) {
+  if (!token && NODE_ENV !== 'production') {
+    // Fallback ONLY in development
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.substring(7);
@@ -50,7 +52,7 @@ export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction)
   }
 
   if (!token) {
-    return res.status(401).json({ error: 'Missing token' });
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
   try {
@@ -65,7 +67,7 @@ export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction)
     req.userRole = decoded.role;
     next();
   } catch (error) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 };
 
