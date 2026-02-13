@@ -9,7 +9,7 @@ import { ACCESS_TOKEN_EXPIRY, REFRESH_TOKEN_EXPIRY } from '../config/env';
 import { loginValidator, signupValidator, refreshTokenValidator, updateProfileValidator, updateEmailPreferencesValidator, addressValidator } from '../validators/auth.validators';
 import { validateRequest } from '../middleware/validateRequest.middleware';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
-import { authLimiter } from '../middleware/rateLimiter.middleware';
+import { authLimiter, refreshLimiter } from '../middleware/rateLimiter.middleware';
 import { changePasswordValidator } from '../validators/auth.validators';
 import { body, param } from 'express-validator';
 import { PasswordResetToken, generatePasswordResetToken } from '../models/passwordResetToken.model';
@@ -450,7 +450,26 @@ router.post('/login', authLimiter, loginValidator, validateRequest, async (req: 
  *         description: Server error
  */
 
-router.post('/refresh-token', async (req: Request, res: Response) => {
+/**
+ * @note No CSRF protection on this endpoint by design
+ * 
+ * Reasoning:
+ * - CSRF token typically expires with the session/access token (15 min)
+ * - Refresh token lives much longer (7 days)
+ * - User returning after access token expiry would lose CSRF token
+ * - Would force re-login, defeating the purpose of refresh tokens
+ * 
+ * Protection mechanisms:
+ * 1. HttpOnly cookies (no JavaScript access)
+ * 2. sameSite=lax (no cross-site POST requests)
+ * 3. Token rotation (single-use tokens)
+ * 4. IP tracking (detect token theft)
+ * 5. Rate limiting (max 10 requests per 15 minutes)
+ * 
+ * This is the same approach used by Auth0, Okta, Firebase, and Keycloak.
+ */
+
+router.post('/refresh-token', refreshLimiter, async (req: Request, res: Response) => {
   try {
     const token = req.cookies.refreshToken; // Read from cookies
     

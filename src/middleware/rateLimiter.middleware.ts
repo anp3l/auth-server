@@ -32,3 +32,9 @@ export const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+export const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Max 10 refreshes in 15 minutes
+  message: 'Too many refresh attempts'
+});
