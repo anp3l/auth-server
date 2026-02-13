@@ -28,6 +28,7 @@ It acts as a centralized Authority, handling user registration, login, and secur
 - **Secure Password Hashing**: bcrypt with 12 salt rounds
 - **Password Reset Flow**: Token-based reset with mock email system for development
 - **Rate Limiting**: Prevents brute-force attacks (5 attempts per 15min on auth endpoints)
+- **Refresh Token Rate Limiting**: Max 10 refresh attempts per 15 minutes (prevents token enumeration)
 - **Security Headers**: Helmet.js protection
 - **CORS with Credentials**: Secure cross-origin cookie handling
 
@@ -142,7 +143,7 @@ NODE_ENV=development
 PORT=4000
 ENABLE_LOGS=true
 
-MONGO_URI=mongodb://auth-mongo:27017/authdb
+MONGO_URI=mongodb://localhost:27017/authdb
 
 PRIVATE_KEY_BASE64=your_base64_encoded_private_key
 PUBLIC_KEY_BASE64=your_base64_encoded_public_key
@@ -162,9 +163,9 @@ SUPPORT_EMAIL=support@yourapp.com
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:4200
 
 # Cookie Security (HttpOnly Cookie Authentication)
-COOKIE_DOMAIN=           # Leave empty for localhost development
+COOKIE_DOMAIN=localhost  # 'localhost' for development, 'yourdomain.com' for production
 COOKIE_SECURE=false      # true in production (HTTPS only)
-COOKIE_SAMESITE=lax      # strict, lax, or none
+COOKIE_SAMESITE=lax      # strict, lax, or none (use 'lax' or 'strict' for best CSRF protection)
 
 # CSRF Protection
 CSRF_SECRET=your-super-secret-csrf-key-change-this-in-production
@@ -427,6 +428,26 @@ This server uses **HttpOnly cookies** for authentication. Tokens are set as secu
 │ - User never notices token refresh!                  │
 └──────────────────────────────────────────────────────┘
 
+      Refresh Token Security (No CSRF by Design):
+        
+┌──────────────────────────────────────────────────────┐
+│  Why /refresh-token doesn't have CSRF protection:    │
+│                                                      │
+│  • CSRF token expires with access token (15min)      │
+│  • Refresh token lives 7 days                        │
+│  • User returning after hours would lose CSRF        │
+│  • Would force re-login, defeating refresh purpose   │
+│                                                      │
+│  Protection layers instead:                          │
+│  ✓ HttpOnly cookies (no JS access)                  │
+│  ✓ SameSite=lax (no cross-site POST)                │
+│  ✓ Token rotation (single-use)                      │
+│  ✓ IP tracking (detect theft)                       │
+│  ✓ Rate limiting (10 req/15min)                     │
+│                                                      │
+│  Same approach used by: Auth0, Okta, Firebase        │
+└──────────────────────────────────────────────────────┘
+
         For Resource Servers (Microservices):
 ┌──────────────────────────────────────────────────────┐
 │                   Resource Server                    │
@@ -529,13 +550,13 @@ See `.env.example` for all available variables. Key ones:
 |----------|-------------|---------|
 | `NODE_ENV` | Environment | `development` |
 | `PORT` | Server port | `4000` |
-| `MONGO_URI` | MongoDB connection | `mongodb://auth-mongo:27017/authdb` |
+| `MONGO_URI` | MongoDB connection | `mongodb://localhost:27017/authdb` |
 | `PRIVATE_KEY_BASE64` | RSA private key | (required) |
 | `PUBLIC_KEY_BASE64` | RSA public key | (required) |
 | `EMAIL_PROVIDER` | Email service | `mock` |
 | `ACCESS_TOKEN_EXPIRY` | Access token lifetime | `15m` |
 | `REFRESH_TOKEN_EXPIRY` | Refresh token lifetime | `7d` |
-| `COOKIE_DOMAIN` | Cookie domain (leave empty for localhost) | (empty) |
+| `COOKIE_DOMAIN` | Cookie domain (`localhost` for dev, your domain for prod) | `localhost` (dev) |
 | `COOKIE_SECURE` | Use secure cookies (HTTPS only) | `false` |
 | `COOKIE_SAMESITE` | SameSite cookie policy | `lax` |
 | `CSRF_SECRET` | Secret for CSRF token generation | (required) |
@@ -553,10 +574,11 @@ See `.env.example` for all available variables. Key ones:
 - ✅ **SameSite Cookies**: Protection against CSRF attacks
 - ✅ **RS256 JWT**: Asymmetric signing, public key for verification
 - ✅ **Refresh Token Rotation**: Single-use tokens, automatically rotated on refresh
+- ✅ **Refresh Token Rate Limiting**: Max 10 refresh attempts per 15 minutes (prevents token enumeration)
 - ✅ **Token Storage in Database**: Refresh tokens stored and revocable
 - ✅ **Automatic Token Refresh**: Seamless UX without interruptions
 - ✅ **Password Hashing**: bcrypt with 12 rounds
-- ✅ **Rate Limiting**: 5 auth attempts per 15min
+- ✅ **Rate Limiting**: 5 auth attempts per 15min on login/signup endpoints, 10 refresh attempts per 15min
 - ✅ **Security Headers**: Helmet.js enabled
 - ✅ **CORS with Credentials**: Strict origin validation
 - ✅ **Input Validation**: express-validator on all endpoints
@@ -588,7 +610,28 @@ localStorage.setItem('token', accessToken);
 - **Seamless UX**: Automatic token refresh on expiration
 - **Microservices Ready**: Same cookies work across services
 
-### Production Checklist
+## Security Design Decisions
+
+### Why No CSRF on Refresh Token?
+
+The `/auth/refresh-token` endpoint intentionally **does not** require CSRF token validation. This is a deliberate security design decision, not an oversight.
+
+**Problem**:
+- CSRF tokens typically expire with the access token (15 minutes)
+- Refresh tokens live much longer (7 days)
+- User returning after hours would have lost their CSRF token
+- Would be forced to re-login, defeating the purpose of refresh tokens
+
+**Protection Strategy**:
+Instead of CSRF, the refresh endpoint relies on multiple security layers:
+
+1. **HttpOnly Cookies**: Token cannot be accessed by JavaScript (XSS protection)
+2. **SameSite=lax**: Browser blocks cross-site POST requests with cookies
+3. **Token Rotation**: Each refresh generates new tokens, old ones are revoked
+4. **IP Tracking**: Database stores IP addresses, suspicious changes trigger alerts
+5. **Rate Limiting**: Maximum 10 refresh attempts per 15 minutes per IP
+
+## Production Checklist
 
 Before deploying to production:
 
@@ -609,6 +652,25 @@ ALLOWED_ORIGINS=https://yourdomain.com  # ✅ Specific origins only
 - ✅ Set up monitoring and alerts
 - ✅ Regular security audits
 
+### Rate Limiting Configuration
+
+The server includes multiple rate limiters to prevent abuse:
+
+- **Auth Endpoints** (`/auth/login`, `/auth/signup`): 5 attempts per 15 minutes
+- **Refresh Token** (`/auth/refresh-token`): 10 attempts per 15 minutes
+- **General API**: 100 requests per 15 minutes
+
+These limits are enforced by IP address. Adjust in `src/middleware/rateLimiter.middleware.ts` based on your traffic patterns.
+
+**Production Recommendation**:
+```typescript
+// Consider lowering in production for tighter security
+export const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3, // Lower for production
+  message: 'Too many authentication attempts'
+});
+```
 ---
 
 ## 🚀 Frontend Integration
@@ -724,12 +786,39 @@ openssl rsa -in private.pem -pubout -out public.pem
 **Symptoms**:
 - 401 errors after login
 - Cookies not appearing in DevTools
+- "Unauthorized" errors on protected endpoints
 
 **Solutions**:
-1. Check CORS: `ALLOWED_ORIGINS` must include your frontend URL
-2. Check cookie domain: Leave `COOKIE_DOMAIN` empty for localhost
-3. Use `withCredentials: true` in frontend requests
-4. Clear browser cookies and retry
+1. **Check CORS**: `ALLOWED_ORIGINS` must include your frontend URL
+   ```bash
+   # .env
+   ALLOWED_ORIGINS=http://localhost:4200,http://localhost:3000
+
+2. **Check Cookie Domain:**
+  - **Development:** Use `COOKIE_DOMAIN=localhost` (works for all localhost ports)
+  - **Production:** Use your actual domain `COOKIE_DOMAIN=yourdomain.com`
+  ```bash
+  # Development
+  COOKIE_DOMAIN=localhost
+
+  # Production
+  COOKIE_DOMAIN=yourdomain.com
+  ```
+3. **Frontend Configuration:** Use `withCredentials: true` in ALL requests
+  ```typescript
+  // Angular
+  httpClient.get(url, { withCredentials: true })
+
+  // Fetch API
+  fetch(url, { credentials: 'include' })
+  ```
+4. **Clear Browser State:** Clear cookies and localStorage, then retry
+
+5. **Verify SameSite Policy:**
+  - Same domain/port: `Use COOKIE_SAMESITE=lax`
+  - Cross-domain: Use `COOKIE_SAMESITE=none` + `COOKIE_SECURE=true` (HTTPS required)
+
+6. **Check Console:** Look for CORS errors or cookie warnings in browser DevTools
 
 ---
 

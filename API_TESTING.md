@@ -2,7 +2,7 @@
 
 Complete guide for testing the Auth Server API using **curl**, **Postman**, and **Swagger UI**.
 
-***
+---
 
 ## Overview
 
@@ -12,7 +12,7 @@ This Auth Server uses **HttpOnly Cookie-based authentication**. Understanding ho
 - **Cookies are automatically sent** - Browser/curl handles this
 - **CSRF token required** - For all protected POST/PUT/PATCH/DELETE requests
 
-***
+---
 
 ## Important: Cookie-Based Authentication
 
@@ -46,7 +46,7 @@ Set-Cookie: refreshToken=a1b2c3...; HttpOnly; Secure; SameSite=Lax; Path=/
 Set-Cookie: _csrf=xyz789...; Path=/
 ```
 
-***
+---
 
 ## Testing with curl
 
@@ -69,7 +69,7 @@ curl -b cookies.txt <url>
 curl -b cookies.txt -c cookies.txt <url>
 ```
 
-***
+---
 
 ## Step-by-Step Testing Flow
 
@@ -119,7 +119,7 @@ curl -X POST http://localhost:4000/auth/signup \
 **Response:**
 ```json
 {
-  "message": "User created successfully",
+  "message": "User created",
   "user": {
     "id": "65f1234567890abcdef12345",
     "username": "demo",
@@ -334,7 +334,7 @@ curl -X POST http://localhost:4000/auth/change-password \
 **Response:**
 ```json
 {
-  "message": "Password changed successfully. All sessions revoked."
+  "message": "Password changed successfully. You have been logged out from all other devices for security."
 }
 ```
 
@@ -415,7 +415,7 @@ curl -X POST http://localhost:4000/auth/reset-password \
 **Response:**
 ```json
 {
-  "message": "Password reset successful"
+  "message": "Password reset successful. Please login with your new password."
 }
 ```
 
@@ -427,7 +427,40 @@ curl -X POST http://localhost:4000/auth/reset-password \
 
 ***
 
-### 10. Logout from Current Device
+### 10. Automatic Token Refresh
+
+The access token expires after 15 minutes. When this happens:
+
+**Request:**
+```bash
+curl -X POST http://localhost:4000/auth/refresh-token \
+  -b cookies.txt \
+  -c cookies.txt
+```
+
+**Response:**
+```json
+{
+  "message": "Tokens refreshed successfully"
+}
+```
+
+**What happens:**
+- Old refresh token revoked
+- New access token issued (15min)
+- New refresh token issued (7 days)
+- Cookies automatically updated
+
+**Rate Limiting:**
+- Maximum 10 refresh attempts per 15 minutes per IP
+- Prevents token enumeration attacks
+- Exceeding limit returns: `429 Too Many Requests`
+
+**Note:** Frontend should implement automatic refresh on 401 errors - see [FRONTEND_INTEGRATION.md](./FRONTEND_INTEGRATION.md)
+
+***
+
+### 11. Logout from Current Device
 
 **Request:**
 ```bash
@@ -450,7 +483,7 @@ curl -X POST http://localhost:4000/auth/revoke-token \
 
 ***
 
-### 11. Logout from All Devices
+### 12. Logout from All Devices
 
 **Request:**
 ```bash
@@ -462,7 +495,8 @@ curl -X POST http://localhost:4000/auth/revoke-all-tokens \
 **Response:**
 ```json
 {
-  "message": "All tokens revoked successfully"
+  "message": "All refresh tokens revoked successfully",
+  "revokedCount": x
 }
 ```
 
@@ -471,7 +505,7 @@ curl -X POST http://localhost:4000/auth/revoke-all-tokens \
 - All active sessions terminated
 - User logged out everywhere
 
-***
+---
 
 ## Admin Testing
 
@@ -721,7 +755,7 @@ curl "http://localhost:4000/admin/audit-logs?page=1&limit=20" \
 }
 ```
 
-***
+---
 
 ## Testing with Postman/Insomnia
 
@@ -786,7 +820,7 @@ Body:
 }
 ```
 
-***
+---
 
 ## Testing with Swagger UI
 
@@ -811,7 +845,7 @@ Open http://localhost:4000/api-docs in your browser.
 
 **Note:** Swagger UI has limited cookie support. For full testing, use curl or Postman.
 
-***
+---
 
 ## Troubleshooting
 
@@ -848,11 +882,36 @@ Open http://localhost:4000/api-docs in your browser.
 **Symptoms:**
 - Authenticated requests fail
 - No cookies in `cookies.txt`
+- "Unauthorized" errors on protected endpoints
 
 **Solutions:**
-1. Use `-c cookies.txt` to save cookies
-2. Check response headers for `Set-Cookie`
-3. Ensure CORS is configured: `ALLOWED_ORIGINS` in `.env`
+1. **Save cookies:** Use `-c cookies.txt` to save cookies
+   ```bash
+   curl -c cookies.txt http://localhost:4000/auth/csrf-token
+   ```
+
+2. **Check response headers:** Verify `Set-Cookie` is present
+   ```bash
+   curl -v http://localhost:4000/auth/login ... | grep Set-Cookie
+   ```
+
+3. **Cookie Domain Configuration:** Ensure `.env` has correct domain
+   ```bash
+   # Development (required for localhost)
+   COOKIE_DOMAIN=localhost
+   
+   # Production
+   COOKIE_DOMAIN=yourdomain.com
+   ```
+
+4. **CORS Configuration:** Verify `ALLOWED_ORIGINS` includes your frontend
+   ```bash
+   ALLOWED_ORIGINS=http://localhost:4200,http://localhost:3000
+   ```
+
+5. **SameSite Policy:** Check if cookies require same-site requests
+   - `COOKIE_SAMESITE=lax` - Cookies sent on same-site requests (recommended)
+   - `COOKIE_SAMESITE=none` - Requires `COOKIE_SECURE=true` (HTTPS only)
 
 ***
 
@@ -869,6 +928,27 @@ Open http://localhost:4000/api-docs in your browser.
 3. Verify endpoint requires your role
 
 ***
+
+### "Too Many Requests" (429)
+
+**Symptoms:**
+```json
+{ "error": "Too many authentication attempts" }
+{ "error": "Too many refresh attempts" }
+```
+
+**Rate Limits:**
+- **Login/Signup**: 5 attempts per 15 minutes
+- **Refresh Token**: 10 attempts per 15 minutes  
+- **General API**: 100 requests per 15 minutes
+
+**Solutions:**
+1. Wait 15 minutes for limit to reset
+2. Check if you're in a loop (e.g., frontend auto-retrying)
+3. Use different IP if testing multiple scenarios
+4. Consider rate limit configuration in `src/middleware/rateLimiter.middleware.ts`
+
+---
 
 ## Tips & Best Practices
 
@@ -907,7 +987,7 @@ curl -X GET http://localhost:4000/auth/csrf-token -c cookies.txt
 docker-compose logs -f auth-server
 ```
 
-***
+---
 
 ## Additional Resources
 
@@ -916,6 +996,6 @@ docker-compose logs -f auth-server
 - [Swagger UI](http://localhost:4000/api-docs)
 - [curl Documentation](https://curl.se/docs/manpage.html)
 
-***
+---
 
 **Made by [anp3l](https://github.com/anp3l)**

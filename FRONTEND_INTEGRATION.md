@@ -223,12 +223,10 @@ import { inject } from '@angular/core';
 import { HttpInterceptorFn, HttpErrorResponse } from '@angular/common/http';
 import { catchError, throwError } from 'rxjs';
 import { Router } from '@angular/router';
-import { Notification } from '@core/services/notification';
 import { Auth } from '@core/services/auth';
 
 export const errorInterceptor: HttpInterceptorFn = (req, next) => {
   const router = inject(Router);
-  const notification = inject(Notification);
   const authService = inject(Auth);
 
   return next(req).pipe(
@@ -280,12 +278,12 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
         }
       }
 
-      // Don't show notification for certain errors (handled elsewhere)
-      const skipNotification = req.headers.has('X-Skip-Error-Notification');
-      
-      if (!skipNotification && error.status !== 401) {
-        notification.showError(errorMessage);
-      }
+      // Log error for debugging
+      console.error('HTTP Error:', {
+        status: error.status,
+        message: errorMessage,
+        url: req.url
+      });
 
       return throwError(() => ({
         status: error.status,
@@ -295,6 +293,7 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
     })
   );
 };
+
 ```
 
 ***
@@ -312,6 +311,35 @@ import { Router } from '@angular/router';
 import { Observable, tap, catchError, throwError, BehaviorSubject, of, finalize, shareReplay } from 'rxjs';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { environment } from '@environments/environment';
+
+// Type definitions (add to a separate types file)
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  role: 'customer' | 'admin';
+  firstName?: string;
+  lastName?: string;
+  avatar?: string;
+}
+
+export interface AuthResponse {
+  message: string;
+  user: User;
+}
+
+export interface LoginCredentials {
+  email: string;
+  password: string;
+}
+
+export interface RegisterData {
+  username: string;
+  email: string;
+  password: string;
+  firstName?: string;
+  lastName?: string;
+}
 
 @Injectable({ providedIn: 'root' })
 export class Auth {
@@ -365,11 +393,14 @@ export class Auth {
    * Register new user
    */
   register(data: RegisterData): Observable<AuthResponse> {
+    this.isLoading.set(true);
+    
     return this.http.post<AuthResponse>(
       `${this.AUTH_API_URL}/auth/signup`,
       data
     ).pipe(
-      tap(response => this.handleAuthSuccess(response))
+      tap(response => this.handleAuthSuccess(response)),
+      finalize(() => this.isLoading.set(false))
     );
   }
   
@@ -377,11 +408,14 @@ export class Auth {
    * Login with credentials
    */
   login(credentials: LoginCredentials): Observable<AuthResponse> {
+    this.isLoading.set(true);
+    
     return this.http.post<AuthResponse>(
       `${this.AUTH_API_URL}/auth/login`,
       credentials
     ).pipe(
-      tap(response => this.handleAuthSuccess(response))
+      tap(response => this.handleAuthSuccess(response)),
+      finalize(() => this.isLoading.set(false))
     );
   }
   
@@ -473,11 +507,24 @@ export class Auth {
   private handleAuthSuccess(response: AuthResponse): void {
     localStorage.setItem(this.USER_KEY, JSON.stringify(response.user));
     this.currentUserSubject.next(response.user);
+    
+    // NOTE: Add your app-specific post-login logic here
+    // Examples:
+    // - Sync shopping cart: this.cartService.syncCart(response.user.id)
+    // - Load user preferences: this.prefsService.load()
+    // - Initialize analytics: this.analytics.identify(response.user)
   }
   
   private clearAuthData(): void {
     localStorage.removeItem(this.USER_KEY);
     this.currentUserSubject.next(null);
+    
+    // NOTE: Clear app-specific state here
+    // Examples:
+    // - Clear cart: this.cartService.clearCart()
+    // - Reset filters: this.filterService.reset()
+    // - Stop timers: this.timerService.stop()
+    
     this.router.navigate(['/login']);
   }
   
@@ -486,6 +533,7 @@ export class Auth {
     return userJson ? JSON.parse(userJson) : null;
   }
 }
+
 ```
 
 ***
